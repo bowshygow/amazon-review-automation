@@ -7,6 +7,7 @@ import type {
   LegacyAmazonOrder,
 } from '$lib/types';
 import { addDays, isBefore } from 'date-fns';
+import pLimit from 'p-limit';
 
 export class AmazonService {
   private db: DatabaseService;
@@ -88,37 +89,37 @@ export class AmazonService {
       let updatedOrders = 0;
       let errors = 0;
 
-      // Process orders in batches for better performance
-      const batchSize = 50;
-      for (let i = 0; i < orders.length; i += batchSize) {
-        const batch = orders.slice(i, i + batchSize);
-        
-        await Promise.allSettled(
-          batch.map(async (order) => {
-            try {
-              // Convert Amazon SP API order to our database format
-              const dbOrder = this.convertAmazonOrderToLegacy(order);
-              
-              // Check if order already exists
-              const existingOrder = await this.db.getOrderByAmazonOrderId(dbOrder.amazonOrderId);
-              
-              if (!existingOrder) {
-                // Create new order
-                await this.db.createOrder(dbOrder);
-                newOrders++;
-              } else {
-                // Update existing order if needed
-                await this.db.updateOrder(existingOrder.id!, dbOrder);
-                updatedOrders++;
-                existingOrders++;
-              }
-            } catch (error) {
-              console.error(`Failed to sync order ${order.AmazonOrderId}:`, error);
-              errors++;
+      // Process orders with limited concurrency to avoid DB connection issues
+      const limit = pLimit(5); // Limit to 5 concurrent operations
+      
+      const orderPromises = orders.map((order) => 
+        limit(async () => {
+          try {
+            // Convert Amazon SP API order to our database format
+            const dbOrder = this.convertAmazonOrderToLegacy(order);
+            
+            // Check if order already exists
+            const existingOrder = await this.db.getOrderByAmazonOrderId(dbOrder.amazonOrderId);
+            
+            if (!existingOrder) {
+              // Create new order
+              await this.db.createOrder(dbOrder);
+              newOrders++;
+            } else {
+              // Update existing order if needed
+              await this.db.updateOrder(existingOrder.id!, dbOrder);
+              updatedOrders++;
+              existingOrders++;
             }
-          })
-        );
-      }
+          } catch (error) {
+            console.error(`Failed to sync order ${order.AmazonOrderId}:`, error);
+            errors++;
+          }
+        })
+      );
+
+      // Wait for all orders to be processed
+      await Promise.all(orderPromises);
 
       // Log sync activity
       await this.db.logActivity('orders_synced', {
@@ -263,63 +264,71 @@ export class AmazonService {
       let retried = 0;
       let successCount = 0;
 
-      for (const request of retryableRequests) {
-        try {
-          retried++;
-          
-          // Get the associated order
-          const order = await this.db.getOrderById(request.orderId);
-          if (!order) {
-            console.warn(`Order not found for review request ${request.id}`);
-            continue;
-          }
-
-          // Check if order is still eligible
-          if (!this.isOrderEligibleForReview(order)) {
-            await this.db.updateReviewRequest(request.id, {
-              status: 'SKIPPED',
-              errorMessage: 'Order no longer eligible for review'
-            });
-            continue;
-          }
-
-          // Attempt to send review request again
-          const result = await this.sendReviewRequest(order);
-          
-          if (result.success) {
-            // Update both order and review request
-            await Promise.all([
-              this.db.updateOrder(order.id, {
-                reviewRequestSent: true,
-                reviewRequestDate: new Date().toISOString(),
-                reviewRequestStatus: 'SENT'
-              }),
-              this.db.updateReviewRequest(request.id, {
-                status: 'SENT',
-                sentAt: new Date().toISOString(),
-                retryCount: request.retryCount + 1
-              })
-            ]);
+      // Process with limited concurrency to avoid DB connection issues
+      const limit = pLimit(3); // Limit to 3 concurrent operations for API calls
+      
+      const retryPromises = retryableRequests.map((request) => 
+        limit(async () => {
+          try {
+            retried++;
             
-            successCount++;
-          } else {
-            // Update retry count and status
+            // Get the associated order
+            const order = await this.db.getOrderById(request.orderId);
+            if (!order) {
+              console.warn(`Order not found for review request ${request.id}`);
+              return;
+            }
+
+            // Check if order is still eligible
+            if (!this.isOrderEligibleForReview(order)) {
+              await this.db.updateReviewRequest(request.id, {
+                status: 'SKIPPED',
+                errorMessage: 'Order no longer eligible for review'
+              });
+              return;
+            }
+
+            // Attempt to send review request again
+            const result = await this.sendReviewRequest(order);
+            
+            if (result.success) {
+              // Update both order and review request
+              await Promise.all([
+                this.db.updateOrder(order.id, {
+                  reviewRequestSent: true,
+                  reviewRequestDate: new Date().toISOString(),
+                  reviewRequestStatus: 'SENT'
+                }),
+                this.db.updateReviewRequest(request.id, {
+                  status: 'SENT',
+                  sentAt: new Date().toISOString(),
+                  retryCount: request.retryCount + 1
+                })
+              ]);
+              
+              successCount++;
+            } else {
+              // Update retry count and status
+              await this.db.updateReviewRequest(request.id, {
+                status: 'FAILED',
+                errorMessage: result.error,
+                retryCount: request.retryCount + 1
+              });
+            }
+          } catch (error) {
+            console.error(`Failed to retry review request ${request.id}:`, error);
+            
             await this.db.updateReviewRequest(request.id, {
               status: 'FAILED',
-              errorMessage: result.error,
+              errorMessage: error instanceof Error ? error.message : 'Unknown error',
               retryCount: request.retryCount + 1
             });
           }
-        } catch (error) {
-          console.error(`Failed to retry review request ${request.id}:`, error);
-          
-          await this.db.updateReviewRequest(request.id, {
-            status: 'FAILED',
-            errorMessage: error instanceof Error ? error.message : 'Unknown error',
-            retryCount: request.retryCount + 1
-          });
-        }
-      }
+        })
+      );
+
+      // Wait for all retry operations to be processed
+      await Promise.all(retryPromises);
 
       // Log retry results
       await this.db.logActivity('failed_review_requests_retried', {
@@ -568,7 +577,7 @@ export class AmazonService {
     try {
       const [dbStats, recentActivity] = await Promise.all([
         this.db.getDashboardStats(),
-        this.db.getActivityLogs(100, undefined, 'daily_automation_completed')
+        this.db.getActivityLogs(undefined, 100)
       ]);
 
       return {

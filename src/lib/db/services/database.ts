@@ -9,6 +9,7 @@ import type {
 } from '$lib/types';
 import { addDays, format } from 'date-fns';
 import type { PrismaClient } from '@prisma/client';
+import pLimit from 'p-limit';
 
 export class DatabaseService {
   // Utility method to handle prepared statement errors with retry logic
@@ -452,45 +453,46 @@ export class DatabaseService {
         where: { id: { in: updates.map(u => u.id) } }
       });
 
-      // Process in batches for better performance
-      const batchSize = 50;
-      for (let i = 0; i < updates.length; i += batchSize) {
-        const batch = updates.slice(i, i + batchSize);
-        await Promise.all(
-          batch.map(async ({ id, updates: orderUpdates }) => {
-            const updateData: any = {};
-            // Apply the same update logic as single update
-            if (orderUpdates.amazonOrderId !== undefined) updateData.amazonOrderId = orderUpdates.amazonOrderId;
-            if (orderUpdates.purchaseDate !== undefined) updateData.purchaseDate = new Date(orderUpdates.purchaseDate);
-            if (orderUpdates.deliveryDate !== undefined) updateData.deliveryDate = new Date(orderUpdates.deliveryDate);
-            if (orderUpdates.orderStatus !== undefined) updateData.orderStatus = orderUpdates.orderStatus;
-            if (orderUpdates.orderTotal !== undefined) {
-              updateData.orderTotal = {
-                currencyCode: orderUpdates.orderTotal.currencyCode,
-                amount: orderUpdates.orderTotal.amount
-              };
-            }
-            if (orderUpdates.marketplaceId !== undefined) updateData.marketplaceId = orderUpdates.marketplaceId;
-            if (orderUpdates.buyerInfo !== undefined) {
-              updateData.buyerInfo = {
-                email: orderUpdates.buyerInfo.email,
-                name: orderUpdates.buyerInfo.name
-              };
-            }
-            if (orderUpdates.isReturned !== undefined) updateData.isReturned = orderUpdates.isReturned;
-            if (orderUpdates.returnDate !== undefined) updateData.returnDate = orderUpdates.returnDate ? new Date(orderUpdates.returnDate) : null;
-            if (orderUpdates.reviewRequestSent !== undefined) updateData.reviewRequestSent = orderUpdates.reviewRequestSent;
-            if (orderUpdates.reviewRequestDate !== undefined) updateData.reviewRequestDate = orderUpdates.reviewRequestDate ? new Date(orderUpdates.reviewRequestDate) : null;
-            if (orderUpdates.reviewRequestStatus !== undefined) updateData.reviewRequestStatus = orderUpdates.reviewRequestStatus;
-            if (orderUpdates.reviewRequestError !== undefined) updateData.reviewRequestError = orderUpdates.reviewRequestError;
+      // Process with limited concurrency to avoid DB connection issues
+      const limit = pLimit(5); // Limit to 5 concurrent operations
+      
+      const updatePromises = updates.map(({ id, updates: orderUpdates }) => 
+        limit(async () => {
+          const updateData: any = {};
+          // Apply the same update logic as single update
+          if (orderUpdates.amazonOrderId !== undefined) updateData.amazonOrderId = orderUpdates.amazonOrderId;
+          if (orderUpdates.purchaseDate !== undefined) updateData.purchaseDate = new Date(orderUpdates.purchaseDate);
+          if (orderUpdates.deliveryDate !== undefined) updateData.deliveryDate = new Date(orderUpdates.deliveryDate);
+          if (orderUpdates.orderStatus !== undefined) updateData.orderStatus = orderUpdates.orderStatus;
+          if (orderUpdates.orderTotal !== undefined) {
+            updateData.orderTotal = {
+              currencyCode: orderUpdates.orderTotal.currencyCode,
+              amount: orderUpdates.orderTotal.amount
+            };
+          }
+          if (orderUpdates.marketplaceId !== undefined) updateData.marketplaceId = orderUpdates.marketplaceId;
+          if (orderUpdates.buyerInfo !== undefined) {
+            updateData.buyerInfo = {
+              email: orderUpdates.buyerInfo.email,
+              name: orderUpdates.buyerInfo.name
+            };
+          }
+          if (orderUpdates.isReturned !== undefined) updateData.isReturned = orderUpdates.isReturned;
+          if (orderUpdates.returnDate !== undefined) updateData.returnDate = orderUpdates.returnDate ? new Date(orderUpdates.returnDate) : null;
+          if (orderUpdates.reviewRequestSent !== undefined) updateData.reviewRequestSent = orderUpdates.reviewRequestSent;
+          if (orderUpdates.reviewRequestDate !== undefined) updateData.reviewRequestDate = orderUpdates.reviewRequestDate ? new Date(orderUpdates.reviewRequestDate) : null;
+          if (orderUpdates.reviewRequestStatus !== undefined) updateData.reviewRequestStatus = orderUpdates.reviewRequestStatus;
+          if (orderUpdates.reviewRequestError !== undefined) updateData.reviewRequestError = orderUpdates.reviewRequestError;
 
-            await client.amazonOrder.update({
-              where: { id },
-              data: updateData
-            });
-          })
-        );
-      }
+          await client.amazonOrder.update({
+            where: { id },
+            data: updateData
+          });
+        })
+      );
+
+      // Wait for all updates to be processed
+      await Promise.all(updatePromises);
     }, 3, 'bulk update orders');
   }
 
