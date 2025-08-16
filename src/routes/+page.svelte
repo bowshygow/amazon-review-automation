@@ -1,19 +1,63 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import type { DashboardStats, LegacyAmazonOrder } from '$lib/types';
+  import DataTable from '$lib/components/DataTable.svelte';
+  import FilterBar from '$lib/components/FilterBar.svelte';
   import { format } from 'date-fns';
 
   let stats: DashboardStats | null = null;
-  let recentOrders: LegacyAmazonOrder[] = [];
+  let orders: LegacyAmazonOrder[] = [];
   let loading = true;
   let error = '';
   let automationLoading = false;
   let retryLoading = false;
   let syncLoading = false;
+  
+  // Pagination and filtering state
+  let currentPage = 1;
+  let pageSize = 20;
+  let totalOrders = 0;
+  let totalPages = 0;
+  let currentFilters: Record<string, any> = {};
+  let sortBy = 'deliveryDate';
+  let sortOrder: 'asc' | 'desc' = 'desc';
 
   onMount(async () => {
     await loadDashboardData();
   });
+
+  async function loadOrders() {
+    try {
+      const params = new URLSearchParams({
+        page: currentPage.toString(),
+        limit: pageSize.toString(),
+        sortBy: sortBy,
+        sortOrder: sortOrder
+      });
+
+      // Add filters to params
+      Object.entries(currentFilters).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') {
+          if (Array.isArray(value)) {
+            value.forEach(v => params.append(key, v));
+          } else {
+            params.append(key, value.toString());
+          }
+        }
+      });
+
+      const ordersResponse = await fetch(`/api/orders?${params.toString()}`);
+      const ordersResult = await ordersResponse.json();
+      
+      if (ordersResult.success && ordersResult.data) {
+        orders = ordersResult.data;
+        totalOrders = ordersResult.total;
+        totalPages = ordersResult.totalPages;
+      }
+    } catch (err: any) {
+      console.error('Error loading orders:', err);
+    }
+  }
 
   async function loadDashboardData() {
     try {
@@ -30,13 +74,8 @@
         error = statsResult.error || 'Failed to load dashboard stats';
       }
 
-      // Load recent orders
-      const ordersResponse = await fetch('/api/orders?page=1&limit=10');
-      const ordersResult = await ordersResponse.json();
-      
-      if (ordersResult.success && ordersResult.data) {
-        recentOrders = ordersResult.data;
-      }
+      // Load orders with pagination
+      await loadOrders();
 
       // Check Amazon API health
       try {
@@ -94,6 +133,7 @@
       if (result.success) {
         alert(`Automation completed successfully!\n\nProcessed: ${result.processed}\nSent: ${result.sent}\nFailed: ${result.failed}\nSkipped: ${result.skipped}`);
         await loadDashboardData(); // Refresh data
+        await loadOrders(); // Refresh orders
       } else {
         alert(`Automation failed: ${result.error}`);
       }
@@ -119,6 +159,7 @@
       if (result.success) {
         alert(`Retry completed successfully!\n\nRetried: ${result.retried}\nSuccessful: ${result.successCount}`);
         await loadDashboardData(); // Refresh data
+        await loadOrders(); // Refresh orders
       } else {
         alert(`Retry failed: ${result.error}`);
       }
@@ -145,6 +186,7 @@
       if (result.success) {
         alert(`Sync completed successfully!\n\nExisting Orders: ${result.existingOrders}\nNew Orders: ${result.newOrders}\nUpdated Orders: ${result.updatedOrders}\nErrors: ${result.errors}\n\nTotal Processed: ${result.totalProcessed}`);
         await loadDashboardData(); // Refresh data
+        await loadOrders(); // Refresh orders
       } else {
         alert(`Sync failed: ${result.error}`);
       }
@@ -171,7 +213,10 @@
         </div>
         <div class="flex space-x-4">
           <button 
-            on:click={loadDashboardData}
+            on:click={async () => {
+              await loadDashboardData();
+              await loadOrders();
+            }}
             class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
           >
             Refresh
@@ -346,53 +391,92 @@
         </div>
       {/if}
 
-      <!-- Recent Orders -->
+      <!-- Orders Table -->
       <div class="bg-white rounded-lg shadow">
         <div class="px-6 py-4 border-b border-gray-200">
-          <h2 class="text-lg font-medium text-gray-900">Recent Orders</h2>
+          <h2 class="text-lg font-medium text-gray-900">Orders</h2>
         </div>
-        <div class="overflow-x-auto">
-          <table class="min-w-full divide-y divide-gray-200">
-            <thead class="bg-gray-50">
-              <tr>
-                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Order ID</th>
-                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Delivery Date</th>
-                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Review Request</th>
-                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total</th>
-              </tr>
-            </thead>
-            <tbody class="bg-white divide-y divide-gray-200">
-              {#each recentOrders as order}
-                <tr class="hover:bg-gray-50">
-                  <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                    {order.amazonOrderId}
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {format(new Date(order.deliveryDate), 'MMM dd, yyyy')}
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap">
-                    <span class="inline-flex px-2 py-1 text-xs font-semibold rounded-full {getStatusColor(order.orderStatus)}">
-                      {order.orderStatus}
-                    </span>
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap">
-                    {#if order.reviewRequestStatus}
-                      <span class="inline-flex px-2 py-1 text-xs font-semibold rounded-full {getStatusColor(order.reviewRequestStatus)}">
-                        {order.reviewRequestStatus}
-                      </span>
-                    {:else}
-                      <span class="text-sm text-gray-500">Not sent</span>
-                    {/if}
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {formatCurrency(order.orderTotal.amount, order.orderTotal.currencyCode)}
-                  </td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
+        
+        <!-- Filter Bar -->
+        <FilterBar 
+          filters={currentFilters} 
+          loading={loading}
+          on:filterChange={async (event) => {
+            currentFilters = event.detail.filters;
+            currentPage = 1;
+            await loadOrders();
+          }}
+        />
+        
+        <!-- Data Table -->
+        <DataTable
+          data={orders}
+          columns={[
+            {
+              key: 'amazonOrderId',
+              label: 'Order ID',
+              sortable: true,
+              width: '200px'
+            },
+            {
+              key: 'deliveryDate',
+              label: 'Delivery Date',
+              sortable: true,
+              width: '150px',
+              render: (value) => format(new Date(value), 'MMM dd, yyyy')
+            },
+            {
+              key: 'orderStatus',
+              label: 'Status',
+              sortable: true,
+              width: '120px',
+              render: (value) => {
+                const colorClass = getStatusColor(value);
+                return `<span class="inline-flex px-2 py-1 text-xs font-semibold rounded-full ${colorClass}">${value}</span>`;
+              }
+            },
+            {
+              key: 'reviewRequestStatus',
+              label: 'Review Request',
+              sortable: true,
+              width: '140px',
+              render: (value, row) => {
+                if (value) {
+                  const colorClass = getStatusColor(value);
+                  return `<span class="inline-flex px-2 py-1 text-xs font-semibold rounded-full ${colorClass}">${value}</span>`;
+                }
+                return 'Not sent';
+              }
+            },
+            {
+              key: 'orderTotal',
+              label: 'Total',
+              sortable: true,
+              width: '120px',
+              align: 'right',
+              render: (value) => formatCurrency(value.amount, value.currencyCode)
+            }
+          ]}
+          loading={loading}
+          pagination={{
+            page: currentPage,
+            limit: pageSize,
+            total: totalOrders,
+            totalPages: totalPages
+          }}
+          filters={currentFilters}
+          {sortBy}
+          {sortOrder}
+          on:sort={async (event) => {
+            sortBy = event.detail.sortBy;
+            sortOrder = event.detail.sortOrder;
+            await loadOrders();
+          }}
+          on:pageChange={async (event) => {
+            currentPage = event.detail.page;
+            await loadOrders();
+          }}
+        />
       </div>
     {/if}
   </main>
