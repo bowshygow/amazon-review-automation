@@ -1,4 +1,5 @@
-import { prisma, resetConnection, handlePreparedStatementError } from '../config/prisma';
+import { databaseManager } from '../config/prisma';
+import { connectionManager } from '../config/connection';
 import type { 
   LegacyAmazonOrder, 
   LegacyReviewRequest, 
@@ -16,80 +17,63 @@ export class DatabaseService {
     maxRetries: number = 3,
     operationName: string = 'database operation'
   ): Promise<T> {
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        return await operation();
-      } catch (error: any) {
-        console.warn(`${operationName} attempt ${attempt} failed:`, error.message);
-        
-        // If it's a prepared statement error, try to reset connection and retry
-        if (handlePreparedStatementError(error)) {
-          if (attempt < maxRetries) {
-            await resetConnection();
-            await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-            continue;
-          }
-        }
-        
-        // For other errors or max retries reached, throw
-        throw error;
-      }
-    }
-    
-    throw new Error(`Failed to execute ${operationName} after all retries`);
+    return connectionManager.executeWithRetry(operation, maxRetries, operationName);
   }
 
   // Orders
   async createOrder(order: Omit<LegacyAmazonOrder, 'id' | 'createdAt' | 'updatedAt'>): Promise<LegacyAmazonOrder> {
     // Use transaction for data consistency
-    return await prisma.$transaction(async (tx: Omit<PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>) => {
-      const dbOrder = await tx.amazonOrder.create({
-        data: {
-          amazonOrderId: order.amazonOrderId,
-          purchaseDate: new Date(order.purchaseDate),
-          deliveryDate: new Date(order.deliveryDate),
-          orderStatus: order.orderStatus as any,
-          orderTotal: {
-            currencyCode: order.orderTotal.currencyCode,
-            amount: order.orderTotal.amount
-          },
-          marketplaceId: order.marketplaceId,
-          buyerInfo: {
-            email: order.buyerInfo.email,
-            name: order.buyerInfo.name
-          },
-          items: order.items.map((item: any) => ({
-            asin: item.asin,
-            sku: item.sku,
-            title: item.title,
-            quantity: item.quantity,
-            priceCurrency: item.price.currencyCode,
-            priceAmount: parseFloat(item.price.amount),
-          })),
-          isReturned: order.isReturned,
-          returnDate: order.returnDate ? new Date(order.returnDate) : null,
-          reviewRequestSent: order.reviewRequestSent || false,
-          reviewRequestDate: order.reviewRequestDate ? new Date(order.reviewRequestDate) : null,
-          reviewRequestStatus: order.reviewRequestStatus,
-          reviewRequestError: order.reviewRequestError
-        }
-      });
+    return await this.executeWithRetry(async () => {
+      const client = await databaseManager.getClient();
+      return await client.$transaction(async (tx: Omit<PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>) => {
+        const dbOrder = await tx.amazonOrder.create({
+          data: {
+            amazonOrderId: order.amazonOrderId,
+            purchaseDate: new Date(order.purchaseDate),
+            deliveryDate: new Date(order.deliveryDate),
+            orderStatus: order.orderStatus as any,
+            orderTotal: {
+              currencyCode: order.orderTotal.currencyCode,
+              amount: order.orderTotal.amount
+            },
+            marketplaceId: order.marketplaceId,
+            buyerInfo: {
+              email: order.buyerInfo.email,
+              name: order.buyerInfo.name
+            },
+            items: order.items.map((item: any) => ({
+              asin: item.asin,
+              sku: item.sku,
+              title: item.title,
+              quantity: item.quantity,
+              priceCurrency: item.price.currencyCode,
+              priceAmount: parseFloat(item.price.amount),
+            })),
+            isReturned: order.isReturned,
+            returnDate: order.returnDate ? new Date(order.returnDate) : null,
+            reviewRequestSent: order.reviewRequestSent || false,
+            reviewRequestDate: order.reviewRequestDate ? new Date(order.reviewRequestDate) : null,
+            reviewRequestStatus: order.reviewRequestStatus,
+            reviewRequestError: order.reviewRequestError
+          }
+        });
 
-      // Log activity for audit trail
-      await tx.activityLog.create({
-        data: {
-          action: 'order_created',
-          details: { 
-            orderId: dbOrder.id, 
-            amazonOrderId: dbOrder.amazonOrderId,
-            totalItems: order.items.length 
-          },
-          orderId: dbOrder.id
-        }
-      });
+        // Log activity for audit trail
+        await tx.activityLog.create({
+          data: {
+            action: 'order_created',
+            details: { 
+              orderId: dbOrder.id, 
+              amazonOrderId: dbOrder.amazonOrderId,
+              totalItems: order.items.length 
+            },
+            orderId: dbOrder.id
+          }
+        });
 
-      return this.mapOrderFromDb(dbOrder);
-    });
+        return this.mapOrderFromDb(dbOrder);
+      });
+    }, 3, 'create order');
   }
 
   async getOrders(filters: OrderFilters = {}, pagination: PaginationParams = { page: 1, limit: 20 }): Promise<{ data: LegacyAmazonOrder[]; total: number }> {
@@ -114,20 +98,19 @@ export class DatabaseService {
       where.reviewRequestStatus = { in: filters.reviewRequestStatus };
     }
     if (filters.search) {
-      // Use full-text search for better performance
       where.OR = [
-        { amazonOrderId: { contains: filters.search, mode: 'insensitive' } }
-        // Note: buyerInfo is JSON, so we can't search it directly with Prisma
-        // Consider using raw SQL or a different approach for JSON field search
+        { amazonOrderId: { contains: filters.search, mode: 'insensitive' } },
+        { 'buyerInfo.name': { contains: filters.search, mode: 'insensitive' } },
+        { 'buyerInfo.email': { contains: filters.search, mode: 'insensitive' } }
       ];
     }
 
-    // Optimize pagination with cursor-based approach for large datasets
-    const offset = (pagination.page - 1) * pagination.limit;
-    
+    const skip = (pagination.page - 1) * pagination.limit;
+
     return await this.executeWithRetry(async () => {
+      const client = await databaseManager.getClient();
       const [data, total] = await Promise.all([
-        prisma.amazonOrder.findMany({
+        client.amazonOrder.findMany({
           where,
           include: { 
             reviewRequests: {
@@ -139,11 +122,11 @@ export class DatabaseService {
               take: 10
             }
           },
-          skip: offset,
-          take: pagination.limit,
-          orderBy: pagination.sortBy ? { [pagination.sortBy]: pagination.sortOrder || 'desc' } : { createdAt: 'desc' }
+          orderBy: { deliveryDate: 'desc' },
+          skip,
+          take: pagination.limit
         }),
-        prisma.amazonOrder.count({ where })
+        client.amazonOrder.count({ where })
       ]);
 
       return {
@@ -154,168 +137,202 @@ export class DatabaseService {
   }
 
   async getOrderById(id: string): Promise<LegacyAmazonOrder | null> {
-    const order = await prisma.amazonOrder.findUnique({
-      where: { id },
-      include: { 
-        reviewRequests: {
-          orderBy: { createdAt: 'desc' },
-          take: 5 // Limit recent review requests
-        },
-        activityLogs: {
-          orderBy: { createdAt: 'desc' },
-          take: 10
+    return await this.executeWithRetry(async () => {
+      const client = await databaseManager.getClient();
+      const order = await client.amazonOrder.findUnique({
+        where: { id },
+        include: { 
+          reviewRequests: {
+            orderBy: { createdAt: 'desc' },
+            take: 5 // Limit recent review requests
+          },
+          activityLogs: {
+            orderBy: { createdAt: 'desc' },
+            take: 10
+          }
         }
-      }
-    });
+      });
 
-    return order ? this.mapOrderFromDb(order) : null;
+      return order ? this.mapOrderFromDb(order) : null;
+    }, 3, 'get order by id');
+  }
+
+  async getOrderByAmazonOrderId(amazonOrderId: string): Promise<LegacyAmazonOrder | null> {
+    return await this.executeWithRetry(async () => {
+      const client = await databaseManager.getClient();
+      const order = await client.amazonOrder.findUnique({
+        where: { amazonOrderId },
+        include: { 
+          reviewRequests: {
+            orderBy: { createdAt: 'desc' },
+            take: 5 // Limit recent review requests
+          },
+          activityLogs: {
+            orderBy: { createdAt: 'desc' },
+            take: 10
+          }
+        }
+      });
+
+      return order ? this.mapOrderFromDb(order) : null;
+    }, 3, 'get order by amazon order id');
   }
 
   async updateOrder(id: string, updates: Partial<LegacyAmazonOrder>): Promise<LegacyAmazonOrder> {
     // Use transaction for data consistency
-    return await prisma.$transaction(async (tx: Omit<PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>) => {
-      const updateData: any = {};
+    return await this.executeWithRetry(async () => {
+      const client = await databaseManager.getClient();
+      return await client.$transaction(async (tx: Omit<PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>) => {
+        const updateData: any = {};
 
-      if (updates.amazonOrderId !== undefined) updateData.amazonOrderId = updates.amazonOrderId;
-      if (updates.purchaseDate !== undefined) updateData.purchaseDate = new Date(updates.purchaseDate);
-      if (updates.deliveryDate !== undefined) updateData.deliveryDate = new Date(updates.deliveryDate);
-      if (updates.orderStatus !== undefined) updateData.orderStatus = updates.orderStatus;
-      if (updates.orderTotal !== undefined) {
-        updateData.orderTotal = {
-          currencyCode: updates.orderTotal.currencyCode,
-          amount: updates.orderTotal.amount
-        };
-      }
-      if (updates.marketplaceId !== undefined) updateData.marketplaceId = updates.marketplaceId;
-      if (updates.buyerInfo !== undefined) {
-        updateData.buyerInfo = {
-          email: updates.buyerInfo.email,
-          name: updates.buyerInfo.name
-        };
-      }
-      if (updates.isReturned !== undefined) updateData.isReturned = updates.isReturned;
-      if (updates.returnDate !== undefined) updateData.returnDate = updates.returnDate ? new Date(updates.returnDate) : null;
-      if (updates.reviewRequestSent !== undefined) updateData.reviewRequestSent = updates.reviewRequestSent;
-      if (updates.reviewRequestDate !== undefined) updateData.reviewRequestDate = updates.reviewRequestDate ? new Date(updates.reviewRequestDate) : null;
-      if (updates.reviewRequestStatus !== undefined) updateData.reviewRequestStatus = updates.reviewRequestStatus;
-      if (updates.reviewRequestError !== undefined) updateData.reviewRequestError = updates.reviewRequestError;
-
-      const updatedOrder = await tx.amazonOrder.update({
-        where: { id },
-        data: updateData,
-        include: { items: true }
-      });
-
-      // Log activity for audit trail
-      await tx.activityLog.create({
-        data: {
-          action: 'order_updated',
-          details: { 
-            orderId: id, 
-            changes: Object.keys(updateData),
-            updatedAt: new Date()
-          },
-          orderId: id
+        if (updates.amazonOrderId !== undefined) updateData.amazonOrderId = updates.amazonOrderId;
+        if (updates.purchaseDate !== undefined) updateData.purchaseDate = new Date(updates.purchaseDate);
+        if (updates.deliveryDate !== undefined) updateData.deliveryDate = new Date(updates.deliveryDate);
+        if (updates.orderStatus !== undefined) updateData.orderStatus = updates.orderStatus;
+        if (updates.orderTotal !== undefined) {
+          updateData.orderTotal = {
+            currencyCode: updates.orderTotal.currencyCode,
+            amount: updates.orderTotal.amount
+          };
         }
-      });
+        if (updates.marketplaceId !== undefined) updateData.marketplaceId = updates.marketplaceId;
+        if (updates.buyerInfo !== undefined) {
+          updateData.buyerInfo = {
+            email: updates.buyerInfo.email,
+            name: updates.buyerInfo.name
+          };
+        }
+        if (updates.isReturned !== undefined) updateData.isReturned = updates.isReturned;
+        if (updates.returnDate !== undefined) updateData.returnDate = updates.returnDate ? new Date(updates.returnDate) : null;
+        if (updates.reviewRequestSent !== undefined) updateData.reviewRequestSent = updates.reviewRequestSent;
+        if (updates.reviewRequestDate !== undefined) updateData.reviewRequestDate = updates.reviewRequestDate ? new Date(updates.reviewRequestDate) : null;
+        if (updates.reviewRequestStatus !== undefined) updateData.reviewRequestStatus = updates.reviewRequestStatus;
+        if (updates.reviewRequestError !== undefined) updateData.reviewRequestError = updates.reviewRequestError;
 
-      return this.mapOrderFromDb(updatedOrder);
-    });
+        const updatedOrder = await tx.amazonOrder.update({
+          where: { id },
+          data: updateData
+        });
+
+        // Log activity for audit trail
+        await tx.activityLog.create({
+          data: {
+            action: 'order_updated',
+            details: { 
+              orderId: id, 
+              changes: Object.keys(updateData),
+              updatedAt: new Date()
+            },
+            orderId: id
+          }
+        });
+
+        return this.mapOrderFromDb(updatedOrder);
+      });
+    }, 3, 'update order');
   }
 
   async getOrdersEligibleForReview(): Promise<LegacyAmazonOrder[]> {
     const twentyFiveDaysAgo = addDays(new Date(), -25);
     
-    // Use optimized query with proper indexing
-    const orders = await prisma.amazonOrder.findMany({
-      where: {
-        isReturned: false,
-        reviewRequestSent: false,
-        deliveryDate: { lte: twentyFiveDaysAgo },
-        orderStatus: 'DELIVERED'
-      },
-      include: { 
-        reviewRequests: {
-          orderBy: { createdAt: 'desc' },
-          take: 5
-        }
-      },
-      // Use cursor-based pagination for large datasets
-      take: 1000 // Reasonable limit for daily processing
-    });
+    return await this.executeWithRetry(async () => {
+      const client = await databaseManager.getClient();
+      // Use optimized query with proper indexing
+      const orders = await client.amazonOrder.findMany({
+        where: {
+          isReturned: false,
+          reviewRequestSent: false,
+          deliveryDate: { lte: twentyFiveDaysAgo },
+          orderStatus: 'DELIVERED'
+        },
+        include: { 
+          reviewRequests: {
+            orderBy: { createdAt: 'desc' },
+            take: 5
+          }
+        },
+        // Use cursor-based pagination for large datasets
+        take: 1000 // Reasonable limit for daily processing
+      });
 
-    return orders.map((order: any) => this.mapOrderFromDb(order));
+      return orders.map((order: any) => this.mapOrderFromDb(order));
+    }, 3, 'get orders eligible for review');
   }
 
   // Review Requests
   async createReviewRequest(reviewRequest: Omit<LegacyReviewRequest, 'id' | 'createdAt' | 'updatedAt'>): Promise<LegacyReviewRequest> {
-    return await prisma.$transaction(async (tx: Omit<PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>) => {
-      const dbRequest = await tx.reviewRequest.create({
-        data: {
-          orderId: reviewRequest.orderId,
-          amazonOrderId: reviewRequest.amazonOrderId,
-          status: reviewRequest.status,
-          sentAt: reviewRequest.sentAt ? new Date(reviewRequest.sentAt) : null,
-          errorMessage: reviewRequest.errorMessage,
-          retryCount: reviewRequest.retryCount || 0
-        }
-      });
-
-      // Log activity for audit trail
-      await tx.activityLog.create({
-        data: {
-          action: 'review_request_created',
-          details: { 
-            requestId: dbRequest.id,
+    return await this.executeWithRetry(async () => {
+      const client = await databaseManager.getClient();
+      return await client.$transaction(async (tx: Omit<PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>) => {
+        const dbRequest = await tx.reviewRequest.create({
+          data: {
             orderId: reviewRequest.orderId,
-            status: reviewRequest.status
-          },
-          orderId: reviewRequest.orderId
-        }
-      });
+            amazonOrderId: reviewRequest.amazonOrderId,
+            status: reviewRequest.status,
+            sentAt: reviewRequest.sentAt ? new Date(reviewRequest.sentAt) : null,
+            errorMessage: reviewRequest.errorMessage,
+            retryCount: reviewRequest.retryCount || 0
+          }
+        });
 
-      return this.mapReviewRequestFromDb(dbRequest);
-    });
+        // Log activity for audit trail
+        await tx.activityLog.create({
+          data: {
+            action: 'review_request_created',
+            details: { 
+              requestId: dbRequest.id,
+              orderId: reviewRequest.orderId,
+              status: reviewRequest.status
+            },
+            orderId: reviewRequest.orderId
+          }
+        });
+
+        return this.mapReviewRequestFromDb(dbRequest);
+      });
+    }, 3, 'create review request');
   }
 
   async updateReviewRequest(id: string, updates: Partial<LegacyReviewRequest>): Promise<LegacyReviewRequest> {
-    return await prisma.$transaction(async (tx: Omit<PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>) => {
-      const updateData: any = {};
+    return await this.executeWithRetry(async () => {
+      const client = await databaseManager.getClient();
+      return await client.$transaction(async (tx: Omit<PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>) => {
+        const updateData: any = {};
 
-      if (updates.orderId !== undefined) updateData.orderId = updates.orderId;
-      if (updates.amazonOrderId !== undefined) updateData.amazonOrderId = updates.amazonOrderId;
-      if (updates.status !== undefined) updateData.status = updates.status;
-      if (updates.sentAt !== undefined) updateData.sentAt = updates.sentAt ? new Date(updates.sentAt) : null;
-      if (updates.errorMessage !== undefined) updateData.errorMessage = updates.errorMessage;
-      if (updates.retryCount !== undefined) updateData.retryCount = updates.retryCount;
+        if (updates.status !== undefined) updateData.status = updates.status;
+        if (updates.sentAt !== undefined) updateData.sentAt = updates.sentAt ? new Date(updates.sentAt) : null;
+        if (updates.errorMessage !== undefined) updateData.errorMessage = updates.errorMessage;
+        if (updates.retryCount !== undefined) updateData.retryCount = updates.retryCount;
 
-      const updatedRequest = await tx.reviewRequest.update({
-        where: { id },
-        data: updateData
+        const updatedRequest = await tx.reviewRequest.update({
+          where: { id },
+          data: updateData
+        });
+
+        // Log activity for audit trail
+        await tx.activityLog.create({
+          data: {
+            action: 'review_request_updated',
+            details: { 
+              requestId: id, 
+              changes: Object.keys(updateData),
+              updatedAt: new Date()
+            },
+            orderId: updates.orderId
+          }
+        });
+
+        return this.mapReviewRequestFromDb(updatedRequest);
       });
-
-      // Log activity for audit trail
-      await tx.activityLog.create({
-        data: {
-          action: 'review_request_updated',
-          details: { 
-            requestId: id, 
-            changes: Object.keys(updateData),
-            updatedAt: new Date()
-          },
-          orderId: updates.orderId
-        }
-      });
-
-      return this.mapReviewRequestFromDb(updatedRequest);
-    });
+    }, 3, 'update review request');
   }
 
   async getReviewRequests(orderId?: string): Promise<LegacyReviewRequest[]> {
     const where = orderId ? { orderId } : {};
 
     return await this.executeWithRetry(async () => {
-      const requests = await prisma.reviewRequest.findMany({
+      const client = await databaseManager.getClient();
+      const requests = await client.reviewRequest.findMany({
         where,
         orderBy: { createdAt: 'desc' },
         // Optimize for common use cases
@@ -329,6 +346,7 @@ export class DatabaseService {
   // Dashboard Statistics with caching and optimization
   async getDashboardStats(): Promise<DashboardStats> {
     return await this.executeWithRetry(async () => {
+      const client = await databaseManager.getClient();
       // Use parallel queries for better performance
       const [
         totalOrders,
@@ -341,8 +359,8 @@ export class DatabaseService {
         thisWeekRequests,
         thisMonthRequests
       ] = await Promise.all([
-        prisma.amazonOrder.count(),
-        prisma.amazonOrder.count({
+        client.amazonOrder.count(),
+        client.amazonOrder.count({
           where: {
             isReturned: false,
             reviewRequestSent: false,
@@ -350,17 +368,17 @@ export class DatabaseService {
             orderStatus: 'DELIVERED'
           }
         }),
-        prisma.reviewRequest.count({ where: { status: 'SENT' } }),
-        prisma.reviewRequest.count({ where: { status: 'FAILED' } }),
-        prisma.reviewRequest.count({ where: { status: 'SKIPPED' } }),
-        prisma.amazonOrder.count({ where: { isReturned: true } }),
-        prisma.reviewRequest.count({
+        client.reviewRequest.count({ where: { status: 'SENT' } }),
+        client.reviewRequest.count({ where: { status: 'FAILED' } }),
+        client.reviewRequest.count({ where: { status: 'SKIPPED' } }),
+        client.amazonOrder.count({ where: { isReturned: true } }),
+        client.reviewRequest.count({
           where: { createdAt: { gte: new Date(format(new Date(), 'yyyy-MM-dd')) } }
         }),
-        prisma.reviewRequest.count({
+        client.reviewRequest.count({
           where: { createdAt: { gte: addDays(new Date(), -7) } }
         }),
-        prisma.reviewRequest.count({
+        client.reviewRequest.count({
           where: { createdAt: { gte: addDays(new Date(), -30) } }
         })
       ]);
@@ -382,7 +400,8 @@ export class DatabaseService {
   // Activity Logs with proper pagination and filtering
   async logActivity(action: string, details: any, orderId?: string): Promise<void> {
     await this.executeWithRetry(async () => {
-      await prisma.activityLog.create({
+      const client = await databaseManager.getClient();
+      await client.activityLog.create({
         data: {
           action,
           details,
@@ -392,133 +411,136 @@ export class DatabaseService {
     }, 3, 'log activity');
   }
 
-  async getActivityLogs(limit: number = 50, orderId?: string, action?: string): Promise<any[]> {
-    const where: any = {};
-    
-    if (orderId) where.orderId = orderId;
-    if (action) where.action = action;
+  async getActivityLogs(orderId?: string, limit: number = 100): Promise<any[]> {
+    const where = orderId ? { orderId } : {};
 
     return await this.executeWithRetry(async () => {
-      // First try without include to avoid prepared statement issues
-      const logs = await prisma.activityLog.findMany({
+      const client = await databaseManager.getClient();
+      const logs = await client.activityLog.findMany({
         where,
         orderBy: { createdAt: 'desc' },
-        take: Math.min(limit, 1000), // Prevent excessive queries
-        select: {
-          id: true,
-          action: true,
-          details: true,
-          orderId: true,
-          createdAt: true
-        }
-      });
-
-      // If we have orderIds, fetch order details separately to avoid prepared statement issues
-      if (logs.length > 0 && logs.some(log => log.orderId)) {
-        const orderIds = [...new Set(logs.filter(log => log.orderId).map(log => log.orderId))];
-        
-        try {
-          const orders = await prisma.amazonOrder.findMany({
-            where: { id: { in: orderIds } },
+        take: limit,
+        include: {
+          order: {
             select: {
-              id: true,
-              amazonOrderId: true
+              amazonOrderId: true,
+              buyerInfo: true
             }
-          });
-
-          // Create a map for quick lookup
-          const orderMap = new Map(orders.map(order => [order.id, order]));
-
-          // Attach order data to logs
-          return logs.map(log => ({
-            ...log,
-            order: log.orderId ? orderMap.get(log.orderId) || null : null
-          }));
-        } catch (orderError: any) {
-          console.warn('Failed to fetch order details for activity logs:', orderError.message);
-          // Return logs without order details if that fails
-          return logs.map(log => ({
-            ...log,
-            order: null
-          }));
-        }
-      }
-
-      return logs;
-    }, 3, 'get activity logs');
-  }
-
-  // Amazon API Configuration with security
-  async getAmazonConfig(): Promise<any> {
-    return await prisma.amazonApiConfig.findFirst({
-      where: { isActive: true },
-      select: {
-        id: true,
-        clientId: true,
-        marketplaceId: true,
-        accessToken: true,
-        tokenExpiresAt: true,
-        createdAt: true,
-        updatedAt: true
-        // Exclude sensitive fields like clientSecret and refreshToken
-      }
-    });
-  }
-
-  // Get full Amazon configuration for API operations (includes sensitive fields)
-  async getFullAmazonConfig(): Promise<any> {
-    return await prisma.amazonApiConfig.findFirst({
-      where: { isActive: true }
-    });
-  }
-
-  async updateAmazonConfig(id: string, updates: any): Promise<any> {
-    return await prisma.$transaction(async (tx: Omit<PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>) => {
-      const updateData: any = { ...updates };
-
-      const updatedConfig = await tx.amazonApiConfig.update({
-        where: { id },
-        data: updateData,
-        select: {
-          id: true,
-          clientId: true,
-          marketplaceId: true,
-          createdAt: true,
-          updatedAt: true
-        }
-      });
-
-      // Log configuration update
-      await tx.activityLog.create({
-        data: {
-          action: 'amazon_config_updated',
-          details: { 
-            configId: id,
-            changes: Object.keys(updates),
-            updatedAt: new Date()
           }
         }
       });
 
-      return updatedConfig;
-    });
+      return logs.map((log: any) => ({
+        id: log.id,
+        action: log.action,
+        details: log.details,
+        orderId: log.orderId,
+        createdAt: log.createdAt,
+        order: log.order ? {
+          amazonOrderId: log.order.amazonOrderId,
+          buyerInfo: log.order.buyerInfo
+        } : null
+      }));
+    }, 3, 'get activity logs');
   }
 
-  // Batch operations for better performance
-  async batchUpdateOrders(updates: Array<{ id: string; updates: Partial<LegacyAmazonOrder> }>): Promise<LegacyAmazonOrder[]> {
-    return await prisma.$transaction(async (tx: Omit<PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>) => {
-      const results = [];
-      
-      for (const { id, updates: updateData } of updates) {
-        const result = await this.updateOrder(id, updateData);
-        results.push(result);
+  // Bulk operations for performance
+  async bulkUpdateOrders(updates: Array<{ id: string; updates: Partial<LegacyAmazonOrder> }>): Promise<void> {
+    return await this.executeWithRetry(async () => {
+      const client = await databaseManager.getClient();
+      const orders = await client.amazonOrder.findMany({
+        where: { id: { in: updates.map(u => u.id) } }
+      });
+
+      // Process in batches for better performance
+      const batchSize = 50;
+      for (let i = 0; i < updates.length; i += batchSize) {
+        const batch = updates.slice(i, i + batchSize);
+        await Promise.all(
+          batch.map(async ({ id, updates: orderUpdates }) => {
+            const updateData: any = {};
+            // Apply the same update logic as single update
+            if (orderUpdates.amazonOrderId !== undefined) updateData.amazonOrderId = orderUpdates.amazonOrderId;
+            if (orderUpdates.purchaseDate !== undefined) updateData.purchaseDate = new Date(orderUpdates.purchaseDate);
+            if (orderUpdates.deliveryDate !== undefined) updateData.deliveryDate = new Date(orderUpdates.deliveryDate);
+            if (orderUpdates.orderStatus !== undefined) updateData.orderStatus = orderUpdates.orderStatus;
+            if (orderUpdates.orderTotal !== undefined) {
+              updateData.orderTotal = {
+                currencyCode: orderUpdates.orderTotal.currencyCode,
+                amount: orderUpdates.orderTotal.amount
+              };
+            }
+            if (orderUpdates.marketplaceId !== undefined) updateData.marketplaceId = orderUpdates.marketplaceId;
+            if (orderUpdates.buyerInfo !== undefined) {
+              updateData.buyerInfo = {
+                email: orderUpdates.buyerInfo.email,
+                name: orderUpdates.buyerInfo.name
+              };
+            }
+            if (orderUpdates.isReturned !== undefined) updateData.isReturned = orderUpdates.isReturned;
+            if (orderUpdates.returnDate !== undefined) updateData.returnDate = orderUpdates.returnDate ? new Date(orderUpdates.returnDate) : null;
+            if (orderUpdates.reviewRequestSent !== undefined) updateData.reviewRequestSent = orderUpdates.reviewRequestSent;
+            if (orderUpdates.reviewRequestDate !== undefined) updateData.reviewRequestDate = orderUpdates.reviewRequestDate ? new Date(orderUpdates.reviewRequestDate) : null;
+            if (orderUpdates.reviewRequestStatus !== undefined) updateData.reviewRequestStatus = orderUpdates.reviewRequestStatus;
+            if (orderUpdates.reviewRequestError !== undefined) updateData.reviewRequestError = orderUpdates.reviewRequestError;
+
+            await client.amazonOrder.update({
+              where: { id },
+              data: updateData
+            });
+          })
+        );
       }
-      
-      return results;
-    });
+    }, 3, 'bulk update orders');
   }
 
-  // Helper methods to map between Prisma and TypeScript formats
+  // Amazon API Configuration
+  async getAmazonApiConfig(): Promise<any> {
+    return await this.executeWithRetry(async () => {
+      const client = await databaseManager.getClient();
+      return await client.amazonApiConfig.findFirst({
+        orderBy: { createdAt: 'desc' }
+      });
+    }, 3, 'get amazon api config');
+  }
+
+  async updateAmazonApiConfig(config: any): Promise<any> {
+    return await this.executeWithRetry(async () => {
+      const client = await databaseManager.getClient();
+      const existingConfig = await client.amazonApiConfig.findFirst({
+        orderBy: { createdAt: 'desc' }
+      });
+
+      return await client.$transaction(async (tx: Omit<PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>) => {
+        if (existingConfig) {
+          // Update existing config
+          return await tx.amazonApiConfig.update({
+            where: { id: existingConfig.id },
+            data: config
+          });
+        } else {
+          // Create new config
+          return await tx.amazonApiConfig.create({
+            data: config
+          });
+        }
+      });
+    }, 3, 'update amazon api config');
+  }
+
+  // Health check method
+  async healthCheck(): Promise<boolean> {
+    try {
+      const client = await databaseManager.getClient();
+      await client.$queryRaw`SELECT 1 as health_check`;
+      return true;
+    } catch (error) {
+      console.error('Database health check failed:', error);
+      return false;
+    }
+  }
+
+  // Data mapping methods
   private mapOrderFromDb(dbOrder: any): LegacyAmazonOrder {
     return {
       id: dbOrder.id,
@@ -527,29 +549,28 @@ export class DatabaseService {
       deliveryDate: dbOrder.deliveryDate.toISOString(),
       orderStatus: dbOrder.orderStatus,
       orderTotal: {
-        currencyCode: dbOrder.orderTotal?.currencyCode || '',
-        amount: dbOrder.orderTotal?.amount || '0'
+        currencyCode: dbOrder.orderTotal.currencyCode,
+        amount: dbOrder.orderTotal.amount
       },
       marketplaceId: dbOrder.marketplaceId,
       buyerInfo: {
-        email: dbOrder.buyerInfo?.email || '',
-        name: dbOrder.buyerInfo?.name || ''
+        email: dbOrder.buyerInfo.email,
+        name: dbOrder.buyerInfo.name
       },
-      items: dbOrder.items?.map((item: any) => ({
-        id: item.asin, // Use ASIN as ID since items are JSON
+      items: dbOrder.items.map((item: any) => ({
         asin: item.asin,
         sku: item.sku,
         title: item.title,
         quantity: item.quantity,
         price: {
           currencyCode: item.priceCurrency,
-          amount: item.priceAmount?.toString() || '0'
+          amount: item.priceAmount.toString()
         }
-      })) || [],
+      })),
       isReturned: dbOrder.isReturned,
-      returnDate: dbOrder.returnDate?.toISOString(),
+      returnDate: dbOrder.returnDate ? dbOrder.returnDate.toISOString() : null,
       reviewRequestSent: dbOrder.reviewRequestSent,
-      reviewRequestDate: dbOrder.reviewRequestDate?.toISOString(),
+      reviewRequestDate: dbOrder.reviewRequestDate ? dbOrder.reviewRequestDate.toISOString() : null,
       reviewRequestStatus: dbOrder.reviewRequestStatus,
       reviewRequestError: dbOrder.reviewRequestError,
       createdAt: dbOrder.createdAt.toISOString(),
@@ -563,7 +584,7 @@ export class DatabaseService {
       orderId: dbRequest.orderId,
       amazonOrderId: dbRequest.amazonOrderId,
       status: dbRequest.status,
-      sentAt: dbRequest.sentAt?.toISOString(),
+      sentAt: dbRequest.sentAt ? dbRequest.sentAt.toISOString() : null,
       errorMessage: dbRequest.errorMessage,
       retryCount: dbRequest.retryCount,
       createdAt: dbRequest.createdAt.toISOString(),

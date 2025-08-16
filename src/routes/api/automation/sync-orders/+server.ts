@@ -12,9 +12,12 @@ export const POST: RequestHandler = async () => {
 
     return json({
       success: result.success,
-      synced: result.synced,
+      existingOrders: result.existingOrders,
+      newOrders: result.newOrders,
+      updatedOrders: result.updatedOrders,
       errors: result.errors,
-      message: `Order sync completed. Synced: ${result.synced}, Errors: ${result.errors}`
+      totalProcessed: result.totalProcessed,
+      message: `Order sync completed. New: ${result.newOrders}, Updated: ${result.updatedOrders}, Errors: ${result.errors}`
     });
 
   } catch (error: any) {

@@ -1,4 +1,4 @@
-import { prisma, checkDatabaseHealth, getConnectionInfo, getQueryStats } from '../config/prisma';
+import { databaseManager, checkDatabaseHealth, getConnectionInfo, getQueryStats } from '../config/prisma';
 
 export class DatabaseConnectionUtils {
   /**
@@ -8,7 +8,8 @@ export class DatabaseConnectionUtils {
     const startTime = Date.now();
     
     try {
-      await prisma.$queryRaw`SELECT 1`;
+      const client = await databaseManager.getClient();
+      await client.$queryRaw`SELECT 1`;
       const latency = Date.now() - startTime;
       
       return { connected: true, latency };
@@ -69,7 +70,8 @@ export class DatabaseConnectionUtils {
     utilization: number;
   }> {
     try {
-      const result = await prisma.$queryRaw`
+      const client = await databaseManager.getClient();
+      const result = await client.$queryRaw`
         SELECT 
           count(*) FILTER (WHERE state = 'active') as active_connections,
           count(*) FILTER (WHERE state = 'idle') as idle_connections,
@@ -115,9 +117,10 @@ export class DatabaseConnectionUtils {
     indexStats: any;
   }> {
     try {
+      const client = await databaseManager.getClient();
       const [slowQueries, queryStats, tableStats, indexStats] = await Promise.all([
         // Get slow queries (> 1000ms)
-        prisma.$queryRaw`
+        client.$queryRaw`
           SELECT query, calls, total_time, mean_time, rows
           FROM pg_stat_statements 
           WHERE mean_time > 1000
@@ -125,7 +128,7 @@ export class DatabaseConnectionUtils {
           LIMIT 10
         `,
         // Get overall query statistics
-        prisma.$queryRaw`
+        client.$queryRaw`
           SELECT 
             sum(calls) as total_calls,
             sum(total_time) as total_time,
@@ -134,7 +137,7 @@ export class DatabaseConnectionUtils {
           FROM pg_stat_statements
         `,
         // Get table statistics
-        prisma.$queryRaw`
+        client.$queryRaw`
           SELECT 
             schemaname,
             tablename,
@@ -147,7 +150,7 @@ export class DatabaseConnectionUtils {
           ORDER BY n_live_tup DESC
         `,
         // Get index statistics
-        prisma.$queryRaw`
+        client.$queryRaw`
           SELECT 
             schemaname,
             tablename,
@@ -187,9 +190,10 @@ export class DatabaseConnectionUtils {
     recommendations: string[];
   }> {
     try {
+      const client = await databaseManager.getClient();
       const [vacuumStats, analyzeStats, indexStats] = await Promise.all([
         // Check vacuum needs
-        prisma.$queryRaw`
+        client.$queryRaw`
           SELECT 
             schemaname,
             tablename,
@@ -200,7 +204,7 @@ export class DatabaseConnectionUtils {
           WHERE n_dead_tup > 0
         `,
         // Check analyze needs
-        prisma.$queryRaw`
+        client.$queryRaw`
           SELECT 
             schemaname,
             tablename,
@@ -213,7 +217,7 @@ export class DatabaseConnectionUtils {
              OR (n_tup_ins + n_tup_upd + n_tup_del) > 1000
         `,
         // Check index fragmentation
-        prisma.$queryRaw`
+        client.$queryRaw`
           SELECT 
             schemaname,
             tablename,
@@ -272,7 +276,8 @@ export class DatabaseConnectionUtils {
    */
   static async closeConnections(): Promise<void> {
     try {
-      await prisma.$disconnect();
+      const client = await databaseManager.getClient();
+      await client.$disconnect();
       console.log('Database connections closed successfully');
     } catch (error) {
       console.error('Error closing database connections:', error);
@@ -284,8 +289,9 @@ export class DatabaseConnectionUtils {
    */
   static async resetConnectionPool(): Promise<{ success: boolean; error?: string }> {
     try {
-      await prisma.$disconnect();
-      await prisma.$connect();
+      const client = await databaseManager.getClient();
+      await client.$disconnect();
+      await client.$connect();
       return { success: true };
     } catch (error) {
       return { 

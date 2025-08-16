@@ -1,7 +1,7 @@
 import { AmazonSPAPI } from './amazon-api';
 import { DatabaseService } from './database';
 import type { LegacyAmazonOrder, LegacyReviewRequest, AmazonAPIConfig } from './types';
-import { addDays, format, parseISO } from 'date-fns';
+import { addDays, format } from 'date-fns';
 
 export class AutomationService {
   private amazonAPI: AmazonSPAPI;
@@ -56,7 +56,7 @@ export class AutomationService {
       await this.db.logActivity('daily_automation_completed', {
         processed,
         errors: errors.length,
-        totalEligible: eligibleOrders.data.length
+        totalEligible: eligibleOrders.length
       });
 
       return { success: true, processed, errors };
@@ -74,20 +74,11 @@ export class AutomationService {
       // 1. Check if order is eligible for solicitation
       const solicitationCheck = await this.amazonAPI.getSolicitationActions(order.amazonOrderId);
       
-      if (!solicitationCheck.success) {
-        return {
-          success: false,
-          status: 'failed',
-          message: 'Failed to check solicitation eligibility',
-          error: solicitationCheck.error
-        };
-      }
-
       // Check if order has actions available (eligible for solicitation)
-      // The SDK response format may be different, so we need to handle it properly
-      const hasActions = solicitationCheck.data?._embedded?.actions && 
-                        Array.isArray(solicitationCheck.data._embedded.actions) && 
-                        solicitationCheck.data._embedded.actions.length > 0;
+      // The Amazon SP API response format
+      const hasActions = solicitationCheck.actions && 
+                        Array.isArray(solicitationCheck.actions) && 
+                        solicitationCheck.actions.length > 0;
       
       if (!hasActions) {
         // Order is not eligible for solicitation (e.g., already sent, outside window, etc.)
@@ -101,17 +92,7 @@ export class AutomationService {
 
       // 2. Send review solicitation
       const solicitationResult = await this.amazonAPI.createReviewSolicitation(order.amazonOrderId);
-      
-      if (!solicitationResult.success) {
-        // Create failed review request record
-        await this.createFailedReviewRequest(order, solicitationResult.error || 'Unknown error');
-        return {
-          success: false,
-          status: 'failed',
-          message: 'Failed to send review solicitation',
-          error: solicitationResult.error
-        };
-      }
+    
 
       // 3. Create successful review request record
       await this.createSuccessfulReviewRequest(order);
@@ -140,7 +121,7 @@ export class AutomationService {
   }
 
   // Mark order as skipped
-  private async markOrderAsSkipped(order: AmazonOrder, reason: string): Promise<void> {
+  private async markOrderAsSkipped(order: LegacyAmazonOrder, reason: string): Promise<void> {
     // Create skipped review request record
     await this.createSkippedReviewRequest(order, reason);
 
@@ -154,8 +135,8 @@ export class AutomationService {
   }
 
   // Create successful review request record
-  private async createSuccessfulReviewRequest(order: AmazonOrder): Promise<void> {
-    const reviewRequest: Omit<ReviewRequest, 'id' | 'createdAt' | 'updatedAt'> = {
+  private async createSuccessfulReviewRequest(order: LegacyAmazonOrder): Promise<void> {
+    const reviewRequest: Omit<LegacyReviewRequest, 'id' | 'createdAt' | 'updatedAt'> = {
       orderId: order.id,
       amazonOrderId: order.amazonOrderId,
       status: 'sent',
@@ -167,8 +148,8 @@ export class AutomationService {
   }
 
   // Create failed review request record
-  private async createFailedReviewRequest(order: AmazonOrder, error: string): Promise<void> {
-    const reviewRequest: Omit<ReviewRequest, 'id' | 'createdAt' | 'updatedAt'> = {
+  private async createFailedReviewRequest(order: LegacyAmazonOrder, error: string): Promise<void> {
+    const reviewRequest: Omit<LegacyReviewRequest, 'id' | 'createdAt' | 'updatedAt'> = {
       orderId: order.id,
       amazonOrderId: order.amazonOrderId,
       status: 'failed',
@@ -180,8 +161,8 @@ export class AutomationService {
   }
 
   // Create skipped review request record
-  private async createSkippedReviewRequest(order: AmazonOrder, reason: string): Promise<void> {
-    const reviewRequest: Omit<ReviewRequest, 'id' | 'createdAt' | 'updatedAt'> = {
+  private async createSkippedReviewRequest(order: LegacyAmazonOrder, reason: string): Promise<void> {
+    const reviewRequest: Omit<LegacyReviewRequest, 'id' | 'createdAt' | 'updatedAt'> = {
       orderId: order.id,
       amazonOrderId: order.amazonOrderId,
       status: 'skipped',
@@ -201,22 +182,18 @@ export class AutomationService {
       // Get failed review requests
       const failedRequests = await this.db.getReviewRequests();
       
-      if (!failedRequests.success || !failedRequests.data) {
-        throw new Error('Failed to get failed review requests');
-      }
-
-      const failed = failedRequests.data.filter(req => req.status === 'failed' && req.retryCount < 3);
+      const failed = failedRequests.filter((req: LegacyReviewRequest) => req.status === 'failed' && req.retryCount < 3);
 
       for (const request of failed) {
         try {
           // Get the order
           const orderResult = await this.db.getOrderById(request.orderId);
-          if (!orderResult.success || !orderResult.data) {
+          if (!orderResult) {
             errors.push(`Failed to get order for request ${request.id}`);
             continue;
           }
 
-          const order = orderResult.data;
+          const order = orderResult;
 
           // Check if order is still eligible (not returned)
           if (order.isReturned) {
@@ -274,10 +251,10 @@ export class AutomationService {
       // Get orders from Amazon API
       const ordersResult = await this.amazonAPI.getOrders(startDate);
       
-      if (!ordersResult.success || !ordersResult.data) {
-        throw new Error('Failed to get orders from Amazon API');
+      if (ordersResult.errors && ordersResult.errors.length > 0) {
+        throw new Error(`Amazon API returned errors: ${ordersResult.errors.map(e => e.message).join(', ')}`);
       }
-      const orders = ordersResult.data.Orders;
+      const orders = ordersResult.payload?.Orders || [];
 
       for (const amazonOrder of orders) {
         try {
@@ -286,49 +263,48 @@ export class AutomationService {
             search: amazonOrder.AmazonOrderId
           });
 
-          if (existingOrder.success && existingOrder.data && existingOrder.data.length > 0) {
+          if (existingOrder.data.length > 0) {
             // Update existing order
             const order = existingOrder.data[0];
-            const updateResult = await this.db.updateOrder(order.id, {
-              orderStatus: amazonOrder.OrderStatus as any,
-              orderTotal: {
-                currencyCode: amazonOrder.OrderTotal.CurrencyCode,
-                amount: amazonOrder.OrderTotal.Amount
-              },
-              updatedAt: new Date().toISOString()
-            });
-            
-            if (!updateResult.success) {
-              errors.push(`Failed to update order ${amazonOrder.AmazonOrderId}: ${updateResult.error}`);
-            } else {
+            try {
+              await this.db.updateOrder(order.id, {
+                orderStatus: amazonOrder.OrderStatus as any,
+                orderTotal: {
+                  currencyCode: amazonOrder.OrderTotal?.CurrencyCode || 'USD',
+                  amount: amazonOrder.OrderTotal?.Amount || '0.00'
+                },
+                updatedAt: new Date().toISOString()
+              });
               synced++;
+            } catch (error: any) {
+              errors.push(`Failed to update order ${amazonOrder.AmazonOrderId}: ${error.message}`);
             }
           } else {
             // Create new order
-            const newOrder: Omit<AmazonOrder, 'id' | 'createdAt' | 'updatedAt'> = {
+            const newOrder: Omit<LegacyAmazonOrder, 'id' | 'createdAt' | 'updatedAt'> = {
               amazonOrderId: amazonOrder.AmazonOrderId,
               purchaseDate: amazonOrder.PurchaseDate,
               deliveryDate: amazonOrder.EarliestShipDate || amazonOrder.PurchaseDate, // Use ship date as delivery date for now
               orderStatus: amazonOrder.OrderStatus as any,
               orderTotal: {
-                currencyCode: amazonOrder.OrderTotal.CurrencyCode,
-                amount: amazonOrder.OrderTotal.Amount
+                currencyCode: amazonOrder.OrderTotal?.CurrencyCode || 'USD',
+                amount: amazonOrder.OrderTotal?.Amount || '0.00'
               },
               marketplaceId: amazonOrder.MarketplaceId,
               buyerInfo: {
-                email: amazonOrder.BuyerInfo?.Email,
-                name: amazonOrder.BuyerInfo?.Name
+                email: amazonOrder.BuyerInfo?.BuyerEmail || '',
+                name: amazonOrder.BuyerInfo?.BuyerName || ''
               },
               items: [], // Will be populated separately if needed
               isReturned: false, // Will be updated when we sync returns
               reviewRequestSent: false
             };
 
-            const createResult = await this.db.createOrder(newOrder);
-            if (!createResult.success) {
-              errors.push(`Failed to create order ${amazonOrder.AmazonOrderId}: ${createResult.error}`);
-            } else {
+            try {
+              await this.db.createOrder(newOrder);
               synced++;
+            } catch (error: any) {
+              errors.push(`Failed to create order ${amazonOrder.AmazonOrderId}: ${error.message}`);
             }
           }
         } catch (error: any) {

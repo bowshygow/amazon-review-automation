@@ -3,14 +3,6 @@
 
 // ===== COMMON API RESPONSE STRUCTURES =====
 
-export interface AmazonAPIResponse<T = any> {
-  success: boolean;
-  data?: T;
-  error?: string;
-  errors?: AmazonAPIError[];
-  statusCode?: number;
-}
-
 export interface AmazonAPIError {
   code: string;
   message: string;
@@ -24,17 +16,14 @@ export interface AmazonAPIErrorList {
 // ===== ORDERS API RESPONSES =====
 
 export interface GetOrdersResponse {
-  payload?: {
-    NextToken?: string;
-    Orders?: AmazonOrder[];
-  };
-  errors?: AmazonAPIError[];
-}
+  NextToken?: string;
+  Orders?: AmazonOrder[];
+};
+
+
 
 // Legacy type aliases for backward compatibility
 export type OrdersResponse = GetOrdersResponse;
-export type ReturnsResponse = any; // Placeholder for returns API
-export type SolicitationResponse = any; // Placeholder for solicitation API
 
 export interface AmazonOrder {
   AmazonOrderId: string;
@@ -111,6 +100,43 @@ export interface OrderItem {
   IsGift?: string; // "true" or "false"
 }
 
+// ===== REPORTS API RESPONSES =====
+
+export interface CreateReportResponse {
+  payload?: {
+    reportId: string;
+  };
+  errors?: AmazonAPIError[];
+}
+
+export interface GetReportResponse {
+  payload?: {
+    reportId: string;
+    reportType: string;
+    dataStartTime?: string;
+    dataEndTime?: string;
+    reportProcessingStatus: 'CANCELLED' | 'DONE' | 'FATAL' | 'IN_PROGRESS' | 'IN_QUEUE';
+    cancelledDate?: string;
+    reportDocumentId?: string;
+    reportScheduleId?: string;
+    processingEndTime?: string;
+    processingStartTime?: string;
+  };
+  errors?: AmazonAPIError[];
+}
+
+export interface GetReportDocumentResponse {
+  payload?: {
+    reportDocumentId: string;
+    url: string;
+    compressionAlgorithm?: string;
+  };
+  errors?: AmazonAPIError[];
+}
+
+// Legacy type aliases for backward compatibility
+export type ReturnsResponse = GetReportDocumentResponse;
+
 // ===== SOLICITATIONS API RESPONSES =====
 
 export interface CreateProductReviewAndSellerFeedbackSolicitationResponse {
@@ -126,6 +152,9 @@ export interface GetSolicitationActionsForOrderResponse {
   actions?: SolicitationsAction[];
   errors?: AmazonAPIError[];
 }
+
+// Legacy type aliases for backward compatibility
+export type SolicitationResponse = GetSolicitationActionsForOrderResponse;
 
 export interface SolicitationsAction {
   name: string;

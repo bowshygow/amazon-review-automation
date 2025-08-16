@@ -3,11 +3,8 @@ import { AmazonSPAPI } from '../../amazon-api';
 import { getAmazonConfig, validateAmazonConfig } from '../../config/amazon';
 import type { 
   AmazonOrder, 
-  GetOrdersResponse, 
-  CreateProductReviewAndSellerFeedbackSolicitationResponse,
-  AmazonAPIResponse,
+  GetOrdersResponse,
   LegacyAmazonOrder,
-  LegacyReviewRequest
 } from '$lib/types';
 import { addDays, isBefore } from 'date-fns';
 
@@ -29,6 +26,13 @@ export class AmazonService {
 
     // Get Amazon API config from environment variables
     const config = getAmazonConfig();
+    console.log('Amazon config check:', {
+      hasClientId: !!config.clientId,
+      hasClientSecret: !!config.clientSecret,
+      hasRefreshToken: !!config.refreshToken,
+      hasMarketplaceId: !!config.marketplaceId,
+      marketplaceId: config.marketplaceId
+    });
     
     if (!validateAmazonConfig(config)) {
       throw new Error('Amazon API configuration not found. Please configure your Amazon API credentials in environment variables.');
@@ -50,7 +54,14 @@ export class AmazonService {
   /**
    * Sync orders from Amazon API and store in database
    */
-  async syncOrders(fromDate?: Date, toDate?: Date): Promise<{ success: boolean; synced: number; errors: number }> {
+  async syncOrders(fromDate?: Date, toDate?: Date): Promise<{ 
+    success: boolean; 
+    existingOrders: number; 
+    newOrders: number; 
+    updatedOrders: number;
+    errors: number;
+    totalProcessed: number;
+  }> {
     try {
       // Check if API is configured
       if (!(await this.isApiConfigured())) {
@@ -63,23 +74,18 @@ export class AmazonService {
 
       // Initialize API and fetch orders from Amazon API
       const api = await this.initializeApi();
+      console.log('API initialized successfully');
+      
       const ordersResponse = await api.getOrders(startDate.toISOString());
-      
-      // Handle the actual Amazon SP API response structure
-      if (!ordersResponse.success || !ordersResponse.data) {
-        throw new Error(ordersResponse.error || 'Failed to fetch orders from Amazon API');
-      }
+      const response = ordersResponse as GetOrdersResponse;
 
-      // The response should be a GetOrdersResponse structure
-      const response = ordersResponse.data as GetOrdersResponse;
-      
-      if (response.errors && response.errors.length > 0) {
-        throw new Error(`Amazon API returned errors: ${response.errors.map(e => e.message).join(', ')}`);
-      }
 
-      const orders = response.payload?.Orders || [];
+      const orders = response?.Orders || [];
+      console.log('Orders found:', orders.length);
       
-      let synced = 0;
+      let existingOrders = 0;
+      let newOrders = 0;
+      let updatedOrders = 0;
       let errors = 0;
 
       // Process orders in batches for better performance
@@ -94,16 +100,17 @@ export class AmazonService {
               const dbOrder = this.convertAmazonOrderToLegacy(order);
               
               // Check if order already exists
-              const existingOrder = await this.db.getOrderById(dbOrder.amazonOrderId);
+              const existingOrder = await this.db.getOrderByAmazonOrderId(dbOrder.amazonOrderId);
               
               if (!existingOrder) {
                 // Create new order
                 await this.db.createOrder(dbOrder);
-                synced++;
+                newOrders++;
               } else {
                 // Update existing order if needed
-                await this.db.updateOrder(existingOrder.id, dbOrder);
-                synced++;
+                await this.db.updateOrder(existingOrder.id!, dbOrder);
+                updatedOrders++;
+                existingOrders++;
               }
             } catch (error) {
               console.error(`Failed to sync order ${order.AmazonOrderId}:`, error);
@@ -117,12 +124,21 @@ export class AmazonService {
       await this.db.logActivity('orders_synced', {
         fromDate: startDate.toISOString(),
         toDate: endDate.toISOString(),
-        synced,
+        existingOrders,
+        newOrders,
+        updatedOrders,
         errors,
         total: orders.length
       });
 
-      return { success: true, synced, errors };
+      return { 
+        success: true, 
+        existingOrders, 
+        newOrders, 
+        updatedOrders, 
+        errors, 
+        totalProcessed: orders.length 
+      };
     } catch (error) {
       console.error('Order sync failed:', error);
       
@@ -131,7 +147,14 @@ export class AmazonService {
         timestamp: new Date().toISOString()
       });
 
-      return { success: false, synced: 0, errors: 1 };
+      return { 
+        success: false, 
+        existingOrders: 0, 
+        newOrders: 0, 
+        updatedOrders: 0, 
+        errors: 1, 
+        totalProcessed: 0 
+      };
     }
   }
 
@@ -349,10 +372,12 @@ export class AmazonService {
       const api = await this.initializeApi();
       const result = await api.createReviewSolicitation(order.amazonOrderId);
       
-      if (result.success) {
+      // The Amazon SP API response doesn't have success/error wrapper
+      // If no errors are returned, it's considered successful
+      if (!result.errors || result.errors.length === 0) {
         return { success: true };
       } else {
-        return { success: false, error: result.error || 'Unknown API error' };
+        return { success: false, error: result.errors[0]?.message || 'Unknown API error' };
       }
     } catch (error) {
       return { 
@@ -398,7 +423,7 @@ export class AmazonService {
 
       await this.db.createReviewRequest({
         orderId,
-        amazonOrderId: '', // Will be filled by the mapping
+        amazonOrderId: orderId, // Use orderId as fallback
         status: 'SKIPPED',
         errorMessage: reason,
         retryCount: 0
