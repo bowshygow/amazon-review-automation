@@ -25,7 +25,9 @@
 		"db:monitor": "tsx scripts/monitor-performance.ts",
 		"db:validate": "prisma validate",
 		"db:format": "prisma format",
-		"db:lint": "prisma lint"
+		"db:lint": "prisma lint",
+		"test:amazon-api": "node scripts/test-amazon-api.js",
+		"test:amazon-api-updated": "node scripts/test-amazon-api-updated.js"
 	},
 	"devDependencies": {
 		"@eslint/compat": "^1.2.5",

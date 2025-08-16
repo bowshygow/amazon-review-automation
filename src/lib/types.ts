@@ -242,6 +242,20 @@ export enum OrderStatus {
   PENDING_AVAILABILITY = 'PendingAvailability'
 }
 
+// Valid order statuses for API calls
+export const VALID_ORDER_STATUSES = [
+  'Unfulfillable',
+  'PartiallyShipped', 
+  'PendingAvailability',
+  'Shipped',
+  'Pending',
+  'InvoiceUnconfirmed',
+  'Canceled',
+  'Unshipped'
+] as const;
+
+export type ValidOrderStatus = typeof VALID_ORDER_STATUSES[number];
+
 export enum FulfillmentChannel {
   SELLER_FULFILLED = 'SellerFulfilled',
   AFN = 'AFN' // Amazon Fulfillment Network

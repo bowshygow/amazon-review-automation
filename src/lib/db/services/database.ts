@@ -244,7 +244,7 @@ export class DatabaseService {
           isReturned: false,
           reviewRequestSent: false,
           deliveryDate: { lte: twentyFiveDaysAgo },
-          orderStatus: 'DELIVERED'
+          orderStatus: { in: ['Shipped', 'PartiallyShipped'] }
         },
         include: { 
           reviewRequests: {
@@ -366,7 +366,7 @@ export class DatabaseService {
             isReturned: false,
             reviewRequestSent: false,
             deliveryDate: { lte: addDays(new Date(), -25) },
-            orderStatus: 'DELIVERED'
+            orderStatus: { in: ['Shipped', 'PartiallyShipped'] }
           }
         }),
         client.reviewRequest.count({ where: { status: 'SENT' } }),
