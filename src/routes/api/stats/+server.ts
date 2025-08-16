@@ -1,24 +1,15 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { DatabaseService } from '$lib/database';
+import { DatabaseService } from '$lib/db/services/database';
 
 export const GET: RequestHandler = async () => {
   try {
     const db = new DatabaseService();
-
-    // Get dashboard stats
-    const result = await db.getDashboardStats();
-
-    if (!result.success) {
-      return json({ 
-        success: false, 
-        error: result.error 
-      }, { status: 500 });
-    }
+    const stats = await db.getDashboardStats();
 
     return json({
       success: true,
-      data: result.data
+      data: stats
     });
 
   } catch (error: any) {

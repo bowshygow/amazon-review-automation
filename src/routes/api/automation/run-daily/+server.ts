@@ -1,40 +1,22 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { AutomationService } from '$lib/automation-service';
-import { DatabaseService } from '$lib/database';
-import { AMAZON_CLIENT_ID, AMAZON_CLIENT_SECRET, AMAZON_REFRESH_TOKEN, AMAZON_MARKETPLACE_ID } from '$env/static/private';
+import { AmazonService } from '$lib/db/services/amazon';
 
 export const POST: RequestHandler = async () => {
   try {
-    // Get Amazon API config from database
-    const db = new DatabaseService();
-    const configResult = await db.getAmazonConfig();
-    
-    if (!configResult.success || !configResult.data) {
-      return json({ 
-        success: false, 
-        error: 'Amazon API configuration not found' 
-      }, { status: 400 });
-    }
-
-    const config = configResult.data;
-
-    // Initialize automation service
-    const automationService = new AutomationService({
-      clientId: config.client_id,
-      clientSecret: config.client_secret,
-      refreshToken: config.refresh_token,
-      marketplaceId: config.marketplace_id
-    });
+    // Initialize Amazon service (handles both API and database operations)
+    const amazonService = new AmazonService();
 
     // Run daily automation
-    const result = await automationService.runDailyAutomation();
+    const result = await amazonService.runDailyAutomation();
 
     return json({
       success: result.success,
       processed: result.processed,
-      errors: result.errors,
-      message: `Automation completed. Processed: ${result.processed}, Errors: ${result.errors.length}`
+      sent: result.sent,
+      failed: result.failed,
+      skipped: result.skipped,
+      message: `Automation completed. Processed: ${result.processed}, Sent: ${result.sent}, Failed: ${result.failed}, Skipped: ${result.skipped}`
     });
 
   } catch (error: any) {

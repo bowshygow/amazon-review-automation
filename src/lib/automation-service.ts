@@ -1,6 +1,6 @@
 import { AmazonSPAPI } from './amazon-api';
 import { DatabaseService } from './database';
-import type { AmazonOrder, ReviewRequest, AmazonAPIConfig, RawAmazonOrder } from './types';
+import type { LegacyAmazonOrder, LegacyReviewRequest, AmazonAPIConfig } from './types';
 import { addDays, format, parseISO } from 'date-fns';
 
 export class AutomationService {
@@ -21,14 +21,10 @@ export class AutomationService {
       // 1. Get orders eligible for review (delivered 25+ days ago, not returned, not sent)
       const eligibleOrders = await this.db.getOrdersEligibleForReview();
       
-      if (!eligibleOrders.success || !eligibleOrders.data) {
-        throw new Error('Failed to get eligible orders');
-      }
-
-      console.log(`Found ${eligibleOrders.data.length} orders eligible for review requests`);
+      console.log(`Found ${eligibleOrders.length} orders eligible for review requests`);
 
       // 2. Process each eligible order
-      for (const order of eligibleOrders.data) {
+      for (const order of eligibleOrders) {
         try {
           const result = await this.processOrderForReview(order);
           if (result.success) {
@@ -73,7 +69,7 @@ export class AutomationService {
   }
 
   // Process a single order for review request
-  private async processOrderForReview(order: AmazonOrder): Promise<{ success: boolean; status: string; message: string; error?: string }> {
+  private async processOrderForReview(order: LegacyAmazonOrder): Promise<{ success: boolean; status: string; message: string; error?: string }> {
     try {
       // 1. Check if order is eligible for solicitation
       const solicitationCheck = await this.amazonAPI.getSolicitationActions(order.amazonOrderId);

@@ -1,18 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { DatabaseService } from '$lib/database';
-  import type { DashboardStats, AmazonOrder } from '$lib/types';
+  import type { DashboardStats, LegacyAmazonOrder } from '$lib/types';
   import { format } from 'date-fns';
 
   let stats: DashboardStats | null = null;
-  let recentOrders: AmazonOrder[] = [];
+  let recentOrders: LegacyAmazonOrder[] = [];
   let loading = true;
   let error = '';
   let automationLoading = false;
   let retryLoading = false;
   let syncLoading = false;
-
-  const db = new DatabaseService();
 
   onMount(async () => {
     await loadDashboardData();
@@ -24,7 +21,9 @@
       error = '';
 
       // Load dashboard stats
-      const statsResult = await db.getDashboardStats();
+      const statsResponse = await fetch('/api/stats');
+      const statsResult = await statsResponse.json();
+      
       if (statsResult.success && statsResult.data) {
         stats = statsResult.data;
       } else {
@@ -32,7 +31,9 @@
       }
 
       // Load recent orders
-      const ordersResult = await db.getOrders({}, { page: 1, limit: 10 });
+      const ordersResponse = await fetch('/api/orders?page=1&limit=10');
+      const ordersResult = await ordersResponse.json();
+      
       if (ordersResult.success && ordersResult.data) {
         recentOrders = ordersResult.data;
       }
