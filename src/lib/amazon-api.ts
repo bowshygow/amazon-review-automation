@@ -5,6 +5,7 @@ import type {
   CreateProductReviewAndSellerFeedbackSolicitationResponse,
   GetSolicitationActionsForOrderResponse
 } from './types';
+import { logger } from './logger';
 
 export class AmazonSPAPI {
   private client: SellingPartner;
@@ -12,7 +13,7 @@ export class AmazonSPAPI {
 
   constructor(config: AmazonAPIConfig) {
     this.config = config;
-    console.log('Initializing Amazon SP-API client with config:', {
+    logger.info('Initializing Amazon SP-API client', {
       hasClientId: !!config.clientId,
       hasClientSecret: !!config.clientSecret,
       hasRefreshToken: !!config.refreshToken,
@@ -88,14 +89,19 @@ export class AmazonSPAPI {
         access_token: this.client.access_token || '',
         expires_in: 3600 // Default expiry time
       };
-    } catch (error) {
-      console.error('Failed to get access token:', error);
+    } catch (error: any) {
+      logger.error('Failed to get access token', { 
+        error: { message: error.message, stack_trace: error.stack },
+        operation: 'getAccessToken' 
+      });
       throw new Error('Failed to authenticate with Amazon SP-API');
     }
   }
 
   // Get Orders using the SDK - Updated to use correct API structure
   async getOrders(createdAfter: string, nextToken?: string): Promise<GetOrdersResponse> {
+    const startTime = Date.now();
+    
     try {
       const query: Record<string, unknown> = {
         MarketplaceIds: [this.config.marketplaceId],
@@ -108,7 +114,7 @@ export class AmazonSPAPI {
         query.NextToken = nextToken;
       }
 
-      console.log('Calling Amazon SP-API getOrders with params:', {
+      logger.info('Calling Amazon SP-API getOrders', {
         marketplaceId: this.config.marketplaceId,
         createdAfter,
         hasNextToken: !!nextToken
@@ -120,21 +126,46 @@ export class AmazonSPAPI {
         query
       });
       
-      console.log('Amazon SP-API getOrders response:', {
-        hasOrders: !!(response as GetOrdersResponse).Orders,
-        orderCount: (response as GetOrdersResponse).Orders?.length || 0,
-        hasNextToken: !!(response as GetOrdersResponse).NextToken
+      const duration = Date.now() - startTime;
+      const orderCount = (response as GetOrdersResponse).Orders?.length || 0;
+      
+      logger.info('Amazon API call: getOrders', {
+        aws: {
+          operation: 'getOrders',
+          success: true
+        },
+        event: {
+          duration
+        },
+        orderCount,
+        hasNextToken: !!(response as GetOrdersResponse).NextToken,
+        marketplaceId: this.config.marketplaceId
       });
 
       return response as GetOrdersResponse;
     } catch (error) {
-      console.error('Failed to get orders from Amazon SP-API:', error);
+      const duration = Date.now() - startTime;
+      
+      logger.error('Amazon API call: getOrders', {
+        aws: {
+          operation: 'getOrders',
+          success: false
+        },
+        event: {
+          duration
+        },
+        error: { message: error instanceof Error ? error.message : 'Unknown error' },
+        marketplaceId: this.config.marketplaceId
+      });
+      
       throw new Error(`Failed to fetch orders: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
   // Get Order Items using the SDK
   async getOrderItems(orderId: string): Promise<Record<string, unknown>> {
+    const startTime = Date.now();
+    
     try {
       const response = await this.client.callAPI({
         operation: 'getOrderItems',
@@ -144,15 +175,40 @@ export class AmazonSPAPI {
         }
       });
 
+      const duration = Date.now() - startTime;
+      logger.info('Amazon API call: getOrderItems', {
+        aws: {
+          operation: 'getOrderItems',
+          success: true
+        },
+        event: {
+          duration
+        },
+        orderId
+      });
+
       return response;
     } catch (error) {
-      console.error(`Failed to get order items for order ${orderId}:`, error);
+      const duration = Date.now() - startTime;
+      logger.error('Amazon API call: getOrderItems', {
+        aws: {
+          operation: 'getOrderItems',
+          success: false
+        },
+        event: {
+          duration
+        },
+        error: { message: error instanceof Error ? error.message : 'Unknown error' },
+        orderId
+      });
       throw new Error(`Failed to fetch order items: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
   // Create Returns Report using the SDK
   async createReturnsReport(dataStartTime: string, dataEndTime: string): Promise<any> {
+    const startTime = Date.now();
+    
     try {
       const response = await this.client.callAPI({
         operation: 'createReport',
@@ -165,15 +221,44 @@ export class AmazonSPAPI {
         }
       });
 
+      const duration = Date.now() - startTime;
+      logger.info('Amazon API call: createReturnsReport', {
+        aws: {
+          operation: 'createReturnsReport',
+          success: true
+        },
+        event: {
+          duration
+        },
+        dataStartTime, 
+        dataEndTime,
+        marketplaceId: this.config.marketplaceId
+      });
+
       return response;
     } catch (error) {
-      console.error('Failed to create returns report:', error);
+      const duration = Date.now() - startTime;
+      logger.error('Amazon API call: createReturnsReport', {
+        aws: {
+          operation: 'createReturnsReport',
+          success: false
+        },
+        event: {
+          duration
+        },
+        error: { message: error instanceof Error ? error.message : 'Unknown error' },
+        dataStartTime, 
+        dataEndTime,
+        marketplaceId: this.config.marketplaceId
+      });
       throw new Error(`Failed to create returns report: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
   // Get Report Status using the SDK
   async getReport(reportId: string): Promise<any> {
+    const startTime = Date.now();
+    
     try {
       const response = await this.client.callAPI({
         operation: 'getReport',
@@ -183,15 +268,40 @@ export class AmazonSPAPI {
         }
       });
 
+      const duration = Date.now() - startTime;
+      logger.info('Amazon API call: getReport', {
+        aws: {
+          operation: 'getReport',
+          success: true
+        },
+        event: {
+          duration
+        },
+        reportId
+      });
+
       return response;
     } catch (error) {
-      console.error(`Failed to get report ${reportId}:`, error);
+      const duration = Date.now() - startTime;
+      logger.error('Amazon API call: getReport', {
+        aws: {
+          operation: 'getReport',
+          success: false
+        },
+        event: {
+          duration
+        },
+        error: { message: error instanceof Error ? error.message : 'Unknown error' },
+        reportId
+      });
       throw new Error(`Failed to get report: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
   // Get Report Document using the SDK
   async getReportDocument(reportDocumentId: string): Promise<any> {
+    const startTime = Date.now();
+    
     try {
       const response = await this.client.callAPI({
         operation: 'getReportDocument',
@@ -201,46 +311,96 @@ export class AmazonSPAPI {
         }
       });
 
+      const duration = Date.now() - startTime;
+      logger.info('Amazon API call: getReportDocument', {
+        aws: {
+          operation: 'getReportDocument',
+          success: true
+        },
+        event: {
+          duration
+        },
+        reportDocumentId
+      });
+
       return response;
     } catch (error) {
-      console.error(`Failed to get report document ${reportDocumentId}:`, error);
+      const duration = Date.now() - startTime;
+      logger.error('Amazon API call: getReportDocument', {
+        aws: {
+          operation: 'getReportDocument',
+          success: false
+        },
+        event: {
+          duration
+        },
+        error: { message: error instanceof Error ? error.message : 'Unknown error' },
+        reportDocumentId
+      });
       throw new Error(`Failed to get report document: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
   // Get Solicitation Actions for Order using the SDK - Updated to use correct API structure
   async getSolicitationActions(orderId: string): Promise<GetSolicitationActionsForOrderResponse> {
+    const startTime = Date.now();
+    
     try {
-      console.log(`Checking solicitation actions for order ${orderId}`);
+      logger.info(`Checking solicitation actions for order ${orderId}`);
       
       const response = await this.client.callAPI({
         operation: 'getSolicitationActionsForOrder',
         endpoint: 'solicitations',
         path: {
-          orderId
+          amazonOrderId: orderId
         },
         query: {
           marketplaceIds: [this.config.marketplaceId]
         }
       });
 
-      console.log('Solicitation actions response:', {
-        hasActions: !!response.actions,
-        actionCount: response.actions?.length || 0,
-        hasErrors: !!response.errors
+      const duration = Date.now() - startTime;
+      const actionCount = response.actions?.length || 0;
+      
+      logger.info('Amazon API call: getSolicitationActions', {
+        aws: {
+          operation: 'getSolicitationActions',
+          success: true
+        },
+        event: {
+          duration
+        },
+        orderId,
+        actionCount,
+        hasErrors: !!response.errors,
+        marketplaceId: this.config.marketplaceId
       });
 
       return response as GetSolicitationActionsForOrderResponse;
     } catch (error) {
-      console.error(`Failed to get solicitation actions for order ${orderId}:`, error);
+      const duration = Date.now() - startTime;
+      logger.error('Amazon API call: getSolicitationActions', {
+        aws: {
+          operation: 'getSolicitationActions',
+          success: false
+        },
+        event: {
+          duration
+        },
+        error: { message: error instanceof Error ? error.message : 'Unknown error' },
+        orderId,
+        marketplaceId: this.config.marketplaceId
+      });
       throw new Error(`Failed to get solicitation actions: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
   // Create Product Review and Seller Feedback Solicitation using the SDK - Updated with proper parameters
   async createReviewSolicitation(orderId: string): Promise<CreateProductReviewAndSellerFeedbackSolicitationResponse> {
+    const startTime = Date.now();
+    
     try {
-      console.log(`Creating review solicitation for order ${orderId}`);
+      logger.info(`Creating review solicitation for order ${orderId}`);
       
       // First check if solicitation actions are available
       const solicitationActions = await this.getSolicitationActions(orderId);
@@ -262,7 +422,7 @@ export class AmazonSPAPI {
         operation: 'createProductReviewAndSellerFeedbackSolicitation',
         endpoint: 'solicitations',
         path: {
-          orderId
+          amazonOrderId: orderId
         },
         query: {
           marketplaceIds: [this.config.marketplaceId]
@@ -272,11 +432,34 @@ export class AmazonSPAPI {
         }
       });
 
-      console.log('Review solicitation created successfully for order:', orderId);
+      const duration = Date.now() - startTime;
+      logger.info('Amazon API call: createReviewSolicitation', {
+        aws: {
+          operation: 'createReviewSolicitation',
+          success: true
+        },
+        event: {
+          duration
+        },
+        orderId,
+        marketplaceId: this.config.marketplaceId
+      });
       
       return response as CreateProductReviewAndSellerFeedbackSolicitationResponse;
     } catch (error) {
-      console.error(`Failed to create review solicitation for order ${orderId}:`, error);
+      const duration = Date.now() - startTime;
+      logger.error('Amazon API call: createReviewSolicitation', {
+        aws: {
+          operation: 'createReviewSolicitation',
+          success: false
+        },
+        event: {
+          duration
+        },
+        error: { message: error instanceof Error ? error.message : 'Unknown error' },
+        orderId,
+        marketplaceId: this.config.marketplaceId
+      });
       throw new Error(`Failed to create review solicitation: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
@@ -324,8 +507,10 @@ export class AmazonSPAPI {
     return this.client;
   }
 
-  // Test API connection
- async testConnection(): Promise<boolean> {
+    // Test API connection
+  async testConnection(): Promise<boolean> {
+    const startTime = Date.now();
+    
     try {
       // Try to get marketplace participations as a simple test
       await this.client.callAPI({
@@ -333,10 +518,31 @@ export class AmazonSPAPI {
         endpoint: 'sellers'
       });
       
-      console.log('API connection test successful');
+      const duration = Date.now() - startTime;
+      logger.info('Amazon API call: testConnection', {
+        aws: {
+          operation: 'testConnection',
+          success: true
+        },
+        event: {
+          duration
+        },
+        marketplaceId: this.config.marketplaceId
+      });
       return true;
     } catch (error) {
-      console.error('API connection test failed:', error);
+      const duration = Date.now() - startTime;
+      logger.error('Amazon API call: testConnection', {
+        aws: {
+          operation: 'testConnection',
+          success: false
+        },
+        event: {
+          duration
+        },
+        error: { message: error instanceof Error ? error.message : 'Unknown error' },
+        marketplaceId: this.config.marketplaceId
+      });
       return false;
     }
   }

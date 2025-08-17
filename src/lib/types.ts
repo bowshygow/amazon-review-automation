@@ -272,6 +272,13 @@ export enum OrderType {
   REPLACEMENT_ORDER = 'ReplacementOrder'
 }
 
+export enum ReviewRequestStatus {
+  PENDING = 'PENDING',
+  SENT = 'SENT',
+  FAILED = 'FAILED',
+  SKIPPED = 'SKIPPED'
+}
+
 // ===== LEGACY TYPES (for backward compatibility) =====
 
 // These types are kept for backward compatibility but should be migrated to use the new Amazon SP API types above

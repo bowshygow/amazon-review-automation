@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import './database-url'; // Import to set DATABASE_URL environment variable
+import { logger } from '$lib/logger';
 
 declare global {
   var __prisma: PrismaClient | undefined;
@@ -14,6 +15,11 @@ class DatabaseManager {
 
   private constructor() {
     this.connectionId = `conn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    logger.info('Creating new Prisma client instance', {
+      connectionId: this.connectionId,
+      environment: process.env.NODE_ENV
+    });
     
     // Always create a fresh Prisma client to avoid prepared statement conflicts
     this.prisma = new PrismaClient({
@@ -74,18 +80,22 @@ class DatabaseManager {
       }
       
       this.isConnected = false;
-      console.log(`[${this.connectionId}] Prisma client recreated`);
-    } catch (error) {
-      console.error(`[${this.connectionId}] Error recreating client:`, error);
+      logger.info('Prisma client recreated', { connectionId: this.connectionId });
+    } catch (error: any) {
+      logger.error('Failed to recreate Prisma client', {
+        error: { message: error.message, stack_trace: error.stack },
+        connectionId: this.connectionId,
+        operation: 'recreateClient'
+      });
       throw error;
     }
   }
 
   // Reset connection (for manual intervention)
   public async resetConnection(): Promise<void> {
-    console.log(`[${this.connectionId}] Resetting connection...`);
+    logger.info('Resetting database connection', { connectionId: this.connectionId });
     await this.recreateClient();
-    console.log(`[${this.connectionId}] Connection reset completed`);
+    logger.info('Connection reset completed', { connectionId: this.connectionId });
   }
 
   // Health check
@@ -102,12 +112,16 @@ class DatabaseManager {
   // Graceful shutdown
   public async disconnect(): Promise<void> {
     try {
-      console.log(`[${this.connectionId}] Disconnecting from database...`);
+      logger.info('Disconnecting from database', { connectionId: this.connectionId });
       await this.prisma.$disconnect();
       this.isConnected = false;
-      console.log(`[${this.connectionId}] Disconnected successfully`);
-    } catch (error) {
-      console.error(`[${this.connectionId}] Error disconnecting from database:`, error);
+      logger.info('Disconnected successfully', { connectionId: this.connectionId });
+    } catch (error: any) {
+      logger.error('Failed to disconnect from database', {
+        error: { message: error.message, stack_trace: error.stack },
+        connectionId: this.connectionId,
+        operation: 'disconnect'
+      });
     }
   }
 
@@ -159,8 +173,11 @@ export async function getConnectionInfo() {
       WHERE state = 'active'
     `;
     return result;
-  } catch (error) {
-    console.error('Failed to get connection info:', error);
+  } catch (error: any) {
+    logger.error('Failed to get connection info', {
+      error: { message: error.message, stack_trace: error.stack },
+      operation: 'getConnectionInfo'
+    });
     return null;
   }
 }
@@ -181,8 +198,11 @@ export async function getQueryStats() {
       LIMIT 10
     `;
     return result;
-  } catch (error) {
-    console.error('Failed to get query stats:', error);
+  } catch (error: any) {
+    logger.error('Failed to get query stats', {
+      error: { message: error.message, stack_trace: error.stack },
+      operation: 'getQueryStats'
+    });
     return null;
   }
 }
@@ -192,20 +212,26 @@ export async function cleanupPreparedStatements() {
   try {
     const client = await databaseManager.getClient();
     await client.$queryRaw`DEALLOCATE ALL`;
-    console.log('Prepared statements cleaned up');
-  } catch (error) {
-    console.error('Failed to cleanup prepared statements:', error);
+    logger.info('Prepared statements cleaned up');
+  } catch (error: any) {
+    logger.error('Failed to cleanup prepared statements', {
+      error: { message: error.message, stack_trace: error.stack },
+      operation: 'cleanupPreparedStatements'
+    });
   }
 }
 
 // Enhanced function to handle prepared statement conflicts
 export async function handlePreparedStatementConflict() {
   try {
-    console.log('Handling prepared statement conflict...');
+    logger.info('Handling prepared statement conflict');
     await databaseManager.resetConnection();
-    console.log('Prepared statement conflict resolved');
-  } catch (error) {
-    console.error('Failed to handle prepared statement conflict:', error);
+    logger.info('Prepared statement conflict resolved');
+  } catch (error: any) {
+    logger.error('Failed to handle prepared statement conflict', {
+      error: { message: error.message, stack_trace: error.stack },
+      operation: 'handlePreparedStatementConflict'
+    });
     throw error;
   }
 }
@@ -235,7 +261,9 @@ export function handlePreparedStatementError(error: any): boolean {
       error.message?.includes('s18') ||
       error.message?.includes('s19') ||
       error.message?.includes('s20')) {
-    console.warn('Prepared statement error detected, connection may need reset');
+    logger.warn('Prepared statement error detected, connection may need reset', {
+      error: { message: error.message }
+    });
     return true;
   }
   return false;

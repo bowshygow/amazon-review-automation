@@ -10,6 +10,7 @@ import type {
 import { addDays, format } from 'date-fns';
 import type { PrismaClient } from '@prisma/client';
 import pLimit from 'p-limit';
+import { logger } from '$lib/logger';
 
 export class DatabaseService {
   // Utility method to handle prepared statement errors with retry logic
@@ -23,58 +24,91 @@ export class DatabaseService {
 
   // Orders
   async createOrder(order: Omit<LegacyAmazonOrder, 'id' | 'createdAt' | 'updatedAt'>): Promise<LegacyAmazonOrder> {
-    // Use transaction for data consistency
-    return await this.executeWithRetry(async () => {
-      const client = await databaseManager.getClient();
-      return await client.$transaction(async (tx: Omit<PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>) => {
-        const dbOrder = await tx.amazonOrder.create({
-          data: {
-            amazonOrderId: order.amazonOrderId,
-            purchaseDate: new Date(order.purchaseDate),
-            deliveryDate: new Date(order.deliveryDate),
-            orderStatus: order.orderStatus as any,
-            orderTotal: {
-              currencyCode: order.orderTotal.currencyCode,
-              amount: order.orderTotal.amount
-            },
-            marketplaceId: order.marketplaceId,
-            buyerInfo: {
-              email: order.buyerInfo.email,
-              name: order.buyerInfo.name
-            },
-            items: order.items.map((item: any) => ({
-              asin: item.asin,
-              sku: item.sku,
-              title: item.title,
-              quantity: item.quantity,
-              priceCurrency: item.price.currencyCode,
-              priceAmount: parseFloat(item.price.amount),
-            })),
-            isReturned: order.isReturned,
-            returnDate: order.returnDate ? new Date(order.returnDate) : null,
-            reviewRequestSent: order.reviewRequestSent || false,
-            reviewRequestDate: order.reviewRequestDate ? new Date(order.reviewRequestDate) : null,
-            reviewRequestStatus: order.reviewRequestStatus,
-            reviewRequestError: order.reviewRequestError
-          }
-        });
+    const startTime = Date.now();
+    
+    try {
+      // Use transaction for data consistency
+      const result = await this.executeWithRetry(async () => {
+        const client = await databaseManager.getClient();
+        return await client.$transaction(async (tx: Omit<PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>) => {
+          const dbOrder = await tx.amazonOrder.create({
+            data: {
+              amazonOrderId: order.amazonOrderId,
+              purchaseDate: new Date(order.purchaseDate),
+              deliveryDate: new Date(order.deliveryDate),
+              orderStatus: order.orderStatus as any,
+              orderTotal: {
+                currencyCode: order.orderTotal.currencyCode,
+                amount: order.orderTotal.amount
+              },
+              marketplaceId: order.marketplaceId,
+              buyerInfo: {
+                email: order.buyerInfo.email,
+                name: order.buyerInfo.name
+              },
+              items: order.items.map((item: any) => ({
+                asin: item.asin,
+                sku: item.sku,
+                title: item.title,
+                quantity: item.quantity,
+                priceCurrency: item.price.currencyCode,
+                priceAmount: parseFloat(item.price.amount),
+              })),
+              isReturned: order.isReturned,
+              returnDate: order.returnDate ? new Date(order.returnDate) : null,
+              reviewRequestSent: order.reviewRequestSent || false,
+              reviewRequestDate: order.reviewRequestDate ? new Date(order.reviewRequestDate) : null,
+              reviewRequestStatus: order.reviewRequestStatus,
+              reviewRequestError: order.reviewRequestError
+            }
+          });
 
-        // Log activity for audit trail
-        await tx.activityLog.create({
-          data: {
-            action: 'order_created',
-            details: { 
-              orderId: dbOrder.id, 
-              amazonOrderId: dbOrder.amazonOrderId,
-              totalItems: order.items.length 
-            },
-            orderId: dbOrder.id
-          }
-        });
+          // Log activity for audit trail
+          await tx.activityLog.create({
+            data: {
+              action: 'order_created',
+              details: { 
+                orderId: dbOrder.id, 
+                amazonOrderId: dbOrder.amazonOrderId,
+                totalItems: order.items.length 
+              },
+              orderId: dbOrder.id
+            }
+          });
 
-        return this.mapOrderFromDb(dbOrder);
+          return this.mapOrderFromDb(dbOrder);
+        });
+      }, 3, 'create order');
+
+      const duration = Date.now() - startTime;
+      logger.info('Database operation: createOrder', {
+        db: {
+          operation: 'createOrder',
+          table: 'amazonOrder'
+        },
+        event: {
+          duration
+        },
+        amazonOrderId: order.amazonOrderId,
+        totalItems: order.items.length
       });
-    }, 3, 'create order');
+
+      return result;
+    } catch (error: any) {
+      const duration = Date.now() - startTime;
+      logger.error('Database operation failed: createOrder', {
+        error: { message: error.message, stack_trace: error.stack },
+        db: {
+          operation: 'createOrder',
+          table: 'amazonOrder'
+        },
+        event: {
+          duration
+        },
+        amazonOrderId: order.amazonOrderId
+      });
+      throw error;
+    }
   }
 
   async getOrders(filters: OrderFilters = {}, pagination: PaginationParams = { page: 1, limit: 20 }): Promise<{ data: LegacyAmazonOrder[]; total: number }> {
@@ -536,8 +570,11 @@ export class DatabaseService {
       const client = await databaseManager.getClient();
       await client.$queryRaw`SELECT 1 as health_check`;
       return true;
-    } catch (error) {
-      console.error('Database health check failed:', error);
+    } catch (error: any) {
+      logger.error('Database health check failed', {
+        error: { message: error.message, stack_trace: error.stack },
+        operation: 'healthCheck'
+      });
       return false;
     }
   }

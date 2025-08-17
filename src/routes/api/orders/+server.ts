@@ -1,9 +1,18 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { DatabaseService } from '$lib/db/services/database';
+import { logger } from '$lib/logger';
 
-export const GET: RequestHandler = async ({ url }) => {
+export const GET: RequestHandler = async ({ url, request }) => {
+  const startTime = Date.now();
+  
   try {
+    logger.info('Fetching orders', {
+      endpoint: '/api/orders',
+      method: 'GET',
+      query: url.search
+    });
+
     const db = new DatabaseService();
 
     // Parse query parameters
@@ -42,6 +51,17 @@ export const GET: RequestHandler = async ({ url }) => {
     // Get orders
     const result = await db.getOrders(filters, pagination);
 
+    const duration = Date.now() - startTime;
+    
+    logger.info('Orders fetched successfully', {
+      endpoint: '/api/orders',
+      duration,
+      total: result.total,
+      page,
+      limit,
+      filters
+    });
+
     return json({
       success: true,
       data: result.data,
@@ -52,7 +72,17 @@ export const GET: RequestHandler = async ({ url }) => {
     });
 
   } catch (error: any) {
-    console.error('Get orders error:', error);
+    const duration = Date.now() - startTime;
+    
+    logger.error('Failed to fetch orders', {
+      error: { message: error.message, stack_trace: error.stack },
+      endpoint: '/api/orders',
+      method: 'GET',
+      duration,
+      query: url.search,
+      userAgent: request.headers.get('user-agent')
+    });
+    
     return json({ 
       success: false, 
       error: error.message || 'Internal server error' 

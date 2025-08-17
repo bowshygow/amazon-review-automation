@@ -49,7 +49,7 @@ model ReviewRequest {
   id              String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
   orderId         String   @map("order_id") @db.Uuid
   amazonOrderId   String   @map("amazon_order_id")
-  status          String   @default("pending")
+  status          String   @default("PENDING")
   sentAt          DateTime? @map("sent_at")
   errorMessage    String?  @map("error_message")
   retryCount      Int      @default(0) @map("retry_count")

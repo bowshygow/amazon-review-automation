@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS review_requests (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     order_id UUID NOT NULL REFERENCES amazon_orders(id) ON DELETE CASCADE,
     amazon_order_id VARCHAR(255) NOT NULL,
-    status VARCHAR(50) NOT NULL DEFAULT 'pending',
+    status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
     sent_at TIMESTAMP WITH TIME ZONE,
     error_message TEXT,
     retry_count INTEGER DEFAULT 0,

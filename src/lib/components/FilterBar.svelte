@@ -1,5 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
+  import { ReviewRequestStatus } from '$lib/types';
 
   export let filters: Record<string, any> = {};
   export let loading = false;
@@ -23,10 +24,10 @@
   ];
 
   const reviewStatuses = [
-    { value: 'sent', label: 'Sent' },
-    { value: 'failed', label: 'Failed' },
-    { value: 'skipped', label: 'Skipped' },
-    { value: 'pending', label: 'Pending' }
+    { value: ReviewRequestStatus.SENT, label: 'Sent' },
+    { value: ReviewRequestStatus.FAILED, label: 'Failed' },
+    { value: ReviewRequestStatus.SKIPPED, label: 'Skipped' },
+    { value: ReviewRequestStatus.PENDING, label: 'Pending' }
   ];
 
   function applyFilters() {

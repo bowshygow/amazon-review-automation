@@ -6,6 +6,7 @@ import type {
   LegacyAmazonOrder,
   LegacyOrderItem,
 } from '$lib/types';
+import { ReviewRequestStatus } from '$lib/types';
 import { addDays, isBefore } from 'date-fns';
 import pLimit from 'p-limit';
 
@@ -272,13 +273,13 @@ export class AmazonService {
             await this.db.updateOrder(order.id, {
               reviewRequestSent: true,
               reviewRequestDate: new Date().toISOString(),
-              reviewRequestStatus: 'SENT'
+              reviewRequestStatus: ReviewRequestStatus.SENT
             });
 
             await this.db.createReviewRequest({
               orderId: order.id,
               amazonOrderId: order.amazonOrderId,
-              status: 'SENT',
+              status: ReviewRequestStatus.SENT,
               sentAt: new Date().toISOString(),
               retryCount: 0
             });
@@ -331,7 +332,7 @@ export class AmazonService {
       // Get failed review requests that can be retried
       const failedRequests = await this.db.getReviewRequests();
       const retryableRequests = failedRequests.filter(req => 
-        req.status === 'FAILED' && req.retryCount < 3
+        req.status === ReviewRequestStatus.FAILED && req.retryCount < 3
       );
 
       let retried = 0;
@@ -355,7 +356,7 @@ export class AmazonService {
             // Check if order is still eligible
             if (!this.isOrderEligibleForReview(order)) {
               await this.db.updateReviewRequest(request.id, {
-                status: 'SKIPPED',
+                status: ReviewRequestStatus.SKIPPED,
                 errorMessage: 'Order no longer eligible for review'
               });
               return;
@@ -370,10 +371,10 @@ export class AmazonService {
                 this.db.updateOrder(order.id, {
                   reviewRequestSent: true,
                   reviewRequestDate: new Date().toISOString(),
-                  reviewRequestStatus: 'SENT'
+                  reviewRequestStatus: ReviewRequestStatus.SENT
                 }),
                 this.db.updateReviewRequest(request.id, {
-                  status: 'SENT',
+                  status: ReviewRequestStatus.SENT,
                   sentAt: new Date().toISOString(),
                   retryCount: request.retryCount + 1
                 })
@@ -383,7 +384,7 @@ export class AmazonService {
             } else {
               // Update retry count and status
               await this.db.updateReviewRequest(request.id, {
-                status: 'FAILED',
+                status: ReviewRequestStatus.FAILED,
                 errorMessage: result.error,
                 retryCount: request.retryCount + 1
               });
@@ -392,7 +393,7 @@ export class AmazonService {
             console.error(`Failed to retry review request ${request.id}:`, error);
             
             await this.db.updateReviewRequest(request.id, {
-              status: 'FAILED',
+              status: ReviewRequestStatus.FAILED,
               errorMessage: error instanceof Error ? error.message : 'Unknown error',
               retryCount: request.retryCount + 1
             });
@@ -486,7 +487,7 @@ export class AmazonService {
     try {
       // Update order status
       await this.db.updateOrder(order.id, {
-        reviewRequestStatus: 'FAILED',
+        reviewRequestStatus: ReviewRequestStatus.FAILED,
         reviewRequestError: error
       });
 
@@ -494,7 +495,7 @@ export class AmazonService {
       await this.db.createReviewRequest({
         orderId: order.id,
         amazonOrderId: order.amazonOrderId,
-        status: 'FAILED',
+        status: ReviewRequestStatus.FAILED,
         errorMessage: error,
         retryCount: 0
       });
@@ -509,14 +510,14 @@ export class AmazonService {
   private async markOrderAsSkipped(orderId: string, reason: string): Promise<void> {
     try {
       await this.db.updateOrder(orderId, {
-        reviewRequestStatus: 'SKIPPED',
+        reviewRequestStatus: ReviewRequestStatus.SKIPPED,
         reviewRequestError: reason
       });
 
       await this.db.createReviewRequest({
         orderId,
         amazonOrderId: orderId, // Use orderId as fallback
-        status: 'SKIPPED',
+        status: ReviewRequestStatus.SKIPPED,
         errorMessage: reason,
         retryCount: 0
       });

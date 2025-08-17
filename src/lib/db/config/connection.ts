@@ -1,4 +1,5 @@
 import { databaseManager } from './prisma';
+import { logger } from '$lib/logger';
 
 // Enhanced Connection management utility for handling prepared statement errors
 export class ConnectionManager {
@@ -28,7 +29,20 @@ export class ConnectionManager {
         await databaseManager.getClient();
         return await operation();
       } catch (error: any) {
-        console.warn(`${operationName} attempt ${attempt} failed:`, error.message);
+        logger.warn(`${operationName} attempt ${attempt} failed`, {
+          error: { message: error.message },
+          attempt,
+          maxRetries
+        });
+        
+        if (attempt === maxRetries) {
+          logger.error(`Failed to execute ${operationName} after all retries`, {
+            error: { message: error.message, stack_trace: error.stack },
+            operation: operationName,
+            attempt,
+            maxRetries
+          });
+        }
         
         throw error;
       }
@@ -41,7 +55,7 @@ export class ConnectionManager {
   private canReset(): boolean {
     const now = Date.now();
     if (now - this.lastResetTime < this.RESET_COOLDOWN) {
-      console.log('Connection reset skipped due to cooldown period');
+      logger.info('Connection reset skipped due to cooldown period');
       return false;
     }
     return true;
@@ -49,7 +63,7 @@ export class ConnectionManager {
 
   private async resetConnection(): Promise<void> {
     if (this.isResetting) {
-      console.log('Connection reset already in progress, skipping...');
+      logger.info('Connection reset already in progress, skipping...');
       return; // Prevent multiple simultaneous resets
     }
 
@@ -58,20 +72,23 @@ export class ConnectionManager {
     this.lastResetTime = Date.now();
     
     try {
-      console.log(`Resetting Prisma connection (attempt ${this.resetCount})...`);
+      logger.info(`Resetting Prisma connection (attempt ${this.resetCount})`);
       
       // Use the database manager to reset the connection
       await databaseManager.resetConnection();
       
       // If we've reset too many times, log a warning
       if (this.resetCount > 3) {
-        console.warn(`Connection has been reset ${this.resetCount} times. Consider checking database health.`);
+        logger.warn(`Connection has been reset ${this.resetCount} times. Consider checking database health.`);
         this.resetCount = 0; // Reset counter after warning
       }
       
-      console.log('Prisma connection reset completed');
-    } catch (error) {
-      console.error('Error resetting connection:', error);
+      logger.info('Prisma connection reset completed');
+    } catch (error: any) {
+      logger.error('Failed to reset connection', {
+        error: { message: error.message, stack_trace: error.stack },
+        operation: 'resetConnection'
+      });
     } finally {
       this.isResetting = false;
     }
