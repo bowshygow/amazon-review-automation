@@ -8,6 +8,7 @@
   let stats: DashboardStats | null = null;
   let orders: LegacyAmazonOrder[] = [];
   let loading = true;
+  let tableLoading = false;
   let error = '';
   let automationLoading = false;
   let retryLoading = false;
@@ -28,6 +29,7 @@
 
   async function loadOrders() {
     try {
+      tableLoading = true;
       const params = new URLSearchParams({
         page: currentPage.toString(),
         limit: pageSize.toString(),
@@ -56,12 +58,15 @@
       }
     } catch (err: any) {
       console.error('Error loading orders:', err);
+    } finally {
+      tableLoading = false;
     }
   }
 
   async function loadDashboardData() {
     try {
       loading = true;
+      tableLoading = true;
       error = '';
 
       // Load dashboard stats
@@ -81,6 +86,7 @@
       error = err.message || 'An error occurred';
     } finally {
       loading = false;
+      tableLoading = false;
     }
   }
 
@@ -365,7 +371,7 @@
         <!-- Filter Bar -->
         <FilterBar 
           filters={currentFilters} 
-          loading={loading}
+          loading={tableLoading}
           on:filterChange={async (event) => {
             currentFilters = event.detail.filters;
             currentPage = 1;
@@ -422,7 +428,7 @@
               render: (value) => formatCurrency(value.amount, value.currencyCode)
             }
           ]}
-          loading={loading}
+          loading={tableLoading}
           pagination={{
             page: currentPage,
             limit: pageSize,

@@ -43,60 +43,7 @@ class DatabaseManager {
 
   // Get the Prisma client instance
   public async getClient(): Promise<PrismaClient> {
-    if (!this.isConnected) {
-      await this.testConnection();
-    }
     return this.prisma;
-  }
-
-  // Test connection without using prepared statements
-  private async testConnection(): Promise<void> {
-    try {
-      console.log(`[${this.connectionId}] Testing database connection...`);
-      
-      // Use a simple query that doesn't create prepared statements
-      await this.prisma.$queryRaw`SELECT 1`;
-      
-      this.isConnected = true;
-      console.log(`[${this.connectionId}] Database connection successful`);
-    } catch (error: any) {
-      console.error(`[${this.connectionId}] Connection test failed:`, error.message);
-      
-      // If it's a prepared statement error, recreate the client
-      if (this.isPreparedStatementError(error)) {
-        console.log(`[${this.connectionId}] Prepared statement error detected, recreating client...`);
-        await this.recreateClient();
-        await this.testConnection(); // Retry once
-      } else {
-        throw error;
-      }
-    }
-  }
-
-  private isPreparedStatementError(error: any): boolean {
-    return error.message?.includes('prepared statement') || 
-           error.message?.includes('already exists') ||
-           error.message?.includes('s0') ||
-           error.message?.includes('s1') ||
-           error.message?.includes('s2') ||
-           error.message?.includes('s3') ||
-           error.message?.includes('s4') ||
-           error.message?.includes('s5') ||
-           error.message?.includes('s6') ||
-           error.message?.includes('s7') ||
-           error.message?.includes('s8') ||
-           error.message?.includes('s9') ||
-           error.message?.includes('s10') ||
-           error.message?.includes('s11') ||
-           error.message?.includes('s12') ||
-           error.message?.includes('s13') ||
-           error.message?.includes('s14') ||
-           error.message?.includes('s15') ||
-           error.message?.includes('s16') ||
-           error.message?.includes('s17') ||
-           error.message?.includes('s18') ||
-           error.message?.includes('s19') ||
-           error.message?.includes('s20');
   }
 
   private async recreateClient(): Promise<void> {
@@ -138,7 +85,6 @@ class DatabaseManager {
   public async resetConnection(): Promise<void> {
     console.log(`[${this.connectionId}] Resetting connection...`);
     await this.recreateClient();
-    await this.testConnection();
     console.log(`[${this.connectionId}] Connection reset completed`);
   }
 

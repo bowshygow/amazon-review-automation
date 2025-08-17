@@ -30,18 +30,6 @@ export class ConnectionManager {
       } catch (error: any) {
         console.warn(`${operationName} attempt ${attempt} failed:`, error.message);
         
-        // Check if it's a prepared statement error
-        if (this.isPreparedStatementError(error)) {
-          if (attempt < maxRetries && !this.isResetting && this.canReset()) {
-            console.log(`Attempting to reset connection for ${operationName}...`);
-            await this.resetConnection();
-            // Exponential backoff with shorter delays
-            await new Promise(resolve => setTimeout(resolve, Math.min(1000 * Math.pow(2, attempt - 1), 5000)));
-            continue;
-          }
-        }
-        
-        // For other errors or max retries reached, throw
         throw error;
       }
     }
@@ -49,34 +37,6 @@ export class ConnectionManager {
     throw new Error(`Failed to execute ${operationName} after all retries`);
   }
 
-  private isPreparedStatementError(error: any): boolean {
-    return error.message?.includes('prepared statement') || 
-           error.message?.includes('does not exist') ||
-           error.message?.includes('connection') ||
-           error.message?.includes('timeout') ||
-           error.message?.includes('already exists') ||
-           error.message?.includes('s0') ||
-           error.message?.includes('s1') ||
-           error.message?.includes('s2') ||
-           error.message?.includes('s3') ||
-           error.message?.includes('s4') ||
-           error.message?.includes('s5') ||
-           error.message?.includes('s6') ||
-           error.message?.includes('s7') ||
-           error.message?.includes('s8') ||
-           error.message?.includes('s9') ||
-           error.message?.includes('s10') ||
-           error.message?.includes('s11') ||
-           error.message?.includes('s12') ||
-           error.message?.includes('s13') ||
-           error.message?.includes('s14') ||
-           error.message?.includes('s15') ||
-           error.message?.includes('s16') ||
-           error.message?.includes('s17') ||
-           error.message?.includes('s18') ||
-           error.message?.includes('s19') ||
-           error.message?.includes('s20');
-  }
 
   private canReset(): boolean {
     const now = Date.now();
