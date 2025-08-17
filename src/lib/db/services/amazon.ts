@@ -3,7 +3,6 @@ import { AmazonSPAPI } from '../../amazon-api';
 import { getAmazonConfig, validateAmazonConfig } from '../../config/amazon';
 import type { 
   AmazonOrder, 
-  GetOrdersResponse,
   LegacyAmazonOrder,
   LegacyOrderItem,
 } from '$lib/types';
@@ -54,6 +53,47 @@ export class AmazonService {
   // ===== ORDER MANAGEMENT =====
   
   /**
+   * Async generator to fetch all orders with pagination
+   */
+  private async *fetchAllOrders(fromDate: Date): AsyncGenerator<AmazonOrder[], void, unknown> {
+    const api = await this.initializeApi();
+    let nextToken: string | undefined;
+    let hasMorePages = true;
+    
+    console.log('Starting to fetch all orders with pagination...');
+    
+    while (hasMorePages) {
+      try {
+        console.log(`Fetching orders page${nextToken ? ' with nextToken' : ''}...`);
+        
+        const response = await api.getOrders(fromDate.toISOString(), nextToken);
+        const orders = response?.Orders || [];
+        
+        console.log(`Fetched ${orders.length} orders in this page`);
+        
+        if (orders.length > 0) {
+          yield orders;
+        }
+        
+        // Check if there are more pages
+        nextToken = response?.NextToken;
+        hasMorePages = !!nextToken && orders.length > 0;
+        
+        if (hasMorePages) {
+          console.log('More pages available, continuing...');
+          // Add a small delay to avoid rate limiting
+          await new Promise(resolve => setTimeout(resolve, 100));
+        } else {
+          console.log('No more pages available');
+        }
+      } catch (error) {
+        console.error('Error fetching orders page:', error);
+        throw error;
+      }
+    }
+  }
+  
+  /**
    * Sync orders from Amazon API and store in database
    */
   async syncOrders(fromDate?: Date, toDate?: Date): Promise<{ 
@@ -74,53 +114,85 @@ export class AmazonService {
       const startDate = fromDate || addDays(new Date(), -30);
       const endDate = toDate || new Date();
 
-      // Initialize API and fetch orders from Amazon API
-      const api = await this.initializeApi();
-      console.log('API initialized successfully');
-      
-      const ordersResponse = await api.getOrders(startDate.toISOString());
-      const response = ordersResponse as GetOrdersResponse;
-
-
-      const orders = response?.Orders || [];
-      console.log('Orders found:', orders.length);
+      console.log('Starting order sync with date range:', {
+        from: startDate.toISOString(),
+        to: endDate.toISOString()
+      });
       
       let existingOrders = 0;
       let newOrders = 0;
       let updatedOrders = 0;
       let errors = 0;
+      let totalProcessed = 0;
 
       // Process orders with limited concurrency to avoid DB connection issues
       const limit = pLimit(5); // Limit to 5 concurrent operations
       
-      const orderPromises = orders.map((order) => 
-        limit(async () => {
-          try {
-            // Convert Amazon SP API order to our database format
-            const dbOrder = this.convertAmazonOrderToLegacy(order);
-            
-            // Check if order already exists
-            const existingOrder = await this.db.getOrderByAmazonOrderId(dbOrder.amazonOrderId);
-            
-            if (!existingOrder) {
-              // Create new order
-              await this.db.createOrder(dbOrder);
-              newOrders++;
-            } else {
-              // Update existing order if needed
-              await this.db.updateOrder(existingOrder.id!, dbOrder);
-              updatedOrders++;
-              existingOrders++;
-            }
-          } catch (error) {
-            console.error(`Failed to sync order ${order.AmazonOrderId}:`, error);
-            errors++;
-          }
-        })
-      );
+      // Use the async generator to fetch all orders
+      for await (const ordersBatch of this.fetchAllOrders(startDate)) {
+        console.log(`Processing batch of ${ordersBatch.length} orders...`);
+        
+                          const orderPromises = ordersBatch.map((order) => 
+           limit(async () => {
+             try {
+               // Convert Amazon SP API order to our database format
+               const dbOrder = this.convertAmazonOrderToLegacy(order);
+               
+               // Check if order already exists
+               const existingOrder = await this.db.getOrderByAmazonOrderId(dbOrder.amazonOrderId);
+               
+               if (!existingOrder) {
+                 // Create new order
+                 await this.db.createOrder(dbOrder);
+                 return { success: true, type: 'new', orderId: order.AmazonOrderId };
+               } else {
+                 // Update existing order if needed
+                 await this.db.updateOrder(existingOrder.id!, dbOrder);
+                 return { success: true, type: 'updated', orderId: order.AmazonOrderId };
+               }
+             } catch (error) {
+               console.error(`Failed to sync order ${order.AmazonOrderId}:`, error);
+               return { success: false, error: error instanceof Error ? error.message : 'Unknown error', orderId: order.AmazonOrderId };
+             }
+           })
+         );
 
-      // Wait for all orders to be processed
-      await Promise.all(orderPromises);
+         // Wait for all orders in this batch to be processed
+         const results = await Promise.allSettled(orderPromises);
+         
+         // Process results
+         for (const result of results) {
+           if (result.status === 'fulfilled') {
+             const orderResult = result.value;
+             if (orderResult.success) {
+               if (orderResult.type === 'new') {
+                 newOrders++;
+               } else if (orderResult.type === 'updated') {
+                 updatedOrders++;
+                 existingOrders++;
+               }
+             } else {
+               errors++;
+               console.error(`Failed to sync order ${orderResult.orderId}:`, orderResult.error);
+             }
+           } else {
+             // Promise was rejected
+             errors++;
+             console.error('Order processing promise rejected:', result.reason);
+           }
+           totalProcessed++;
+         }
+        
+        console.log(`Completed processing batch. Total processed so far: ${totalProcessed}`);
+      }
+
+      console.log('Order sync completed. Final stats:', {
+        existingOrders,
+        newOrders,
+        updatedOrders,
+        errors,
+        totalProcessed
+      });
 
       // Log sync activity
       await this.db.logActivity('orders_synced', {
@@ -130,7 +202,7 @@ export class AmazonService {
         newOrders,
         updatedOrders,
         errors,
-        total: orders.length
+        total: totalProcessed
       });
 
       return { 
@@ -139,7 +211,7 @@ export class AmazonService {
         newOrders, 
         updatedOrders, 
         errors, 
-        totalProcessed: orders.length 
+        totalProcessed 
       };
     } catch (error) {
       console.error('Order sync failed:', error);
@@ -329,7 +401,7 @@ export class AmazonService {
       );
 
       // Wait for all retry operations to be processed
-      await Promise.all(retryPromises);
+      await Promise.allSettled(retryPromises);
 
       // Log retry results
       await this.db.logActivity('failed_review_requests_retried', {
