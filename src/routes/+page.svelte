@@ -1,55 +1,101 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { DatabaseService } from '$lib/database';
-  import type { DashboardStats, AmazonOrder } from '$lib/types';
+  import type { DashboardStats, LegacyAmazonOrder } from '$lib/types';
+  import DataTable from '$lib/components/DataTable.svelte';
+  import FilterBar from '$lib/components/FilterBar.svelte';
   import { format } from 'date-fns';
 
   let stats: DashboardStats | null = null;
-  let recentOrders: AmazonOrder[] = [];
+  let orders: LegacyAmazonOrder[] = [];
   let loading = true;
+  let tableLoading = false;
   let error = '';
   let automationLoading = false;
   let retryLoading = false;
   let syncLoading = false;
-
-  const db = new DatabaseService();
+  
+  // Pagination and filtering state
+  let currentPage = 1;
+  let pageSize = 20;
+  let totalOrders = 0;
+  let totalPages = 0;
+  let currentFilters: Record<string, any> = {};
+  let sortBy = 'deliveryDate';
+  let sortOrder: 'asc' | 'desc' = 'desc';
 
   onMount(async () => {
     await loadDashboardData();
   });
 
+  async function loadOrders() {
+    try {
+      tableLoading = true;
+      const params = new URLSearchParams({
+        page: currentPage.toString(),
+        limit: pageSize.toString(),
+        sortBy: sortBy,
+        sortOrder: sortOrder
+      });
+
+      // Add filters to params
+      Object.entries(currentFilters).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') {
+          if (Array.isArray(value)) {
+            value.forEach(v => params.append(key, v));
+          } else {
+            params.append(key, value.toString());
+          }
+        }
+      });
+
+      const ordersResponse = await fetch(`/api/orders?${params.toString()}`);
+      const ordersResult = await ordersResponse.json();
+      
+      if (ordersResult.success && ordersResult.data) {
+        orders = ordersResult.data;
+        totalOrders = ordersResult.total;
+        totalPages = ordersResult.totalPages;
+      }
+    } catch (err: any) {
+      console.error('Error loading orders:', err);
+    } finally {
+      tableLoading = false;
+    }
+  }
+
   async function loadDashboardData() {
     try {
       loading = true;
+      tableLoading = true;
       error = '';
 
       // Load dashboard stats
-      const statsResult = await db.getDashboardStats();
+      const statsResponse = await fetch('/api/stats');
+      const statsResult = await statsResponse.json();
+      
       if (statsResult.success && statsResult.data) {
         stats = statsResult.data;
       } else {
         error = statsResult.error || 'Failed to load dashboard stats';
       }
 
-      // Load recent orders
-      const ordersResult = await db.getOrders({}, { page: 1, limit: 10 });
-      if (ordersResult.success && ordersResult.data) {
-        recentOrders = ordersResult.data;
-      }
+      // Load orders with pagination
+      await loadOrders();
 
     } catch (err: any) {
       error = err.message || 'An error occurred';
     } finally {
       loading = false;
+      tableLoading = false;
     }
   }
 
   function getStatusColor(status: string) {
     switch (status) {
-      case 'sent': return 'text-green-600 bg-green-100';
-      case 'failed': return 'text-red-600 bg-red-100';
-      case 'skipped': return 'text-yellow-600 bg-yellow-100';
-      case 'pending': return 'text-blue-600 bg-blue-100';
+      case 'SENT': return 'text-green-600 bg-green-100';
+      case 'FAILED': return 'text-red-600 bg-red-100';
+      case 'SKIPPED': return 'text-yellow-600 bg-yellow-100';
+      case 'PENDING': return 'text-blue-600 bg-blue-100';
       default: return 'text-gray-600 bg-gray-100';
     }
   }
@@ -74,8 +120,9 @@
       const result = await response.json();
       
       if (result.success) {
-        alert(`Automation completed successfully!\nProcessed: ${result.processed}\nErrors: ${result.errors.length}`);
+        alert(`Automation completed successfully!\n\nProcessed: ${result.processed}\nSent: ${result.sent}\nFailed: ${result.failed}\nSkipped: ${result.skipped}`);
         await loadDashboardData(); // Refresh data
+        await loadOrders(); // Refresh orders
       } else {
         alert(`Automation failed: ${result.error}`);
       }
@@ -99,8 +146,9 @@
       const result = await response.json();
       
       if (result.success) {
-        alert(`Retry completed successfully!\nRetried: ${result.retried}\nErrors: ${result.errors.length}`);
+        alert(`Retry completed successfully!\n\nRetried: ${result.retried}\nSuccessful: ${result.successCount}`);
         await loadDashboardData(); // Refresh data
+        await loadOrders(); // Refresh orders
       } else {
         alert(`Retry failed: ${result.error}`);
       }
@@ -114,7 +162,7 @@
   async function syncOrders() {
     try {
       syncLoading = true;
-      const response = await fetch('/api/automation/sync-orders', {
+      const response = await fetch('/api/orders/sync', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -125,8 +173,9 @@
       const result = await response.json();
       
       if (result.success) {
-        alert(`Sync completed successfully!\nSynced: ${result.synced}\nErrors: ${result.errors.length}`);
+        alert(`Sync completed successfully!\n\nExisting Orders: ${result.existingOrders}\nNew Orders: ${result.newOrders}\nUpdated Orders: ${result.updatedOrders}\nErrors: ${result.errors}\n\nTotal Processed: ${result.totalProcessed}`);
         await loadDashboardData(); // Refresh data
+        await loadOrders(); // Refresh orders
       } else {
         alert(`Sync failed: ${result.error}`);
       }
@@ -153,7 +202,10 @@
         </div>
         <div class="flex space-x-4">
           <button 
-            on:click={loadDashboardData}
+            on:click={async () => {
+              await loadDashboardData();
+              await loadOrders();
+            }}
             class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
           >
             Refresh
@@ -281,82 +333,121 @@
             </div>
           </div>
 
-          <div class="bg-white rounded-lg shadow p-6">
-            <h3 class="text-lg font-medium text-gray-900 mb-4">Quick Actions</h3>
-            <div class="space-y-3">
-              <button 
-                on:click={runDailyAutomation}
-                disabled={automationLoading}
-                class="w-full bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {automationLoading ? 'Running...' : 'Run Daily Automation'}
-              </button>
-              <button 
-                on:click={retryFailedRequests}
-                disabled={retryLoading}
-                class="w-full bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {retryLoading ? 'Retrying...' : 'Retry Failed Requests'}
-              </button>
-              <button 
-                on:click={syncOrders}
-                disabled={syncLoading}
-                class="w-full bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {syncLoading ? 'Syncing...' : 'Sync Orders'}
-              </button>
-            </div>
-          </div>
+                     <div class="bg-white rounded-lg shadow p-6">
+             <h3 class="text-lg font-medium text-gray-900 mb-4">Quick Actions</h3>
+             <div class="space-y-3">
+               <button 
+                 on:click={runDailyAutomation}
+                 disabled={automationLoading}
+                 class="w-full bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+               >
+                 {automationLoading ? 'Running...' : 'Run Daily Automation'}
+               </button>
+               <button 
+                 on:click={retryFailedRequests}
+                 disabled={retryLoading}
+                 class="w-full bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+               >
+                 {retryLoading ? 'Retrying...' : 'Retry Failed Requests'}
+               </button>
+               <button 
+                 on:click={syncOrders}
+                 disabled={syncLoading}
+                 class="w-full bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+               >
+                 {syncLoading ? 'Syncing...' : 'Sync Orders'}
+               </button>
+             </div>
+           </div>
         </div>
       {/if}
 
-      <!-- Recent Orders -->
+      <!-- Orders Table -->
       <div class="bg-white rounded-lg shadow">
         <div class="px-6 py-4 border-b border-gray-200">
-          <h2 class="text-lg font-medium text-gray-900">Recent Orders</h2>
+          <h2 class="text-lg font-medium text-gray-900">Orders</h2>
         </div>
-        <div class="overflow-x-auto">
-          <table class="min-w-full divide-y divide-gray-200">
-            <thead class="bg-gray-50">
-              <tr>
-                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Order ID</th>
-                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Delivery Date</th>
-                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Review Request</th>
-                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total</th>
-              </tr>
-            </thead>
-            <tbody class="bg-white divide-y divide-gray-200">
-              {#each recentOrders as order}
-                <tr class="hover:bg-gray-50">
-                  <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                    {order.amazonOrderId}
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {format(new Date(order.deliveryDate), 'MMM dd, yyyy')}
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap">
-                    <span class="inline-flex px-2 py-1 text-xs font-semibold rounded-full {getStatusColor(order.orderStatus)}">
-                      {order.orderStatus}
-                    </span>
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap">
-                    {#if order.reviewRequestStatus}
-                      <span class="inline-flex px-2 py-1 text-xs font-semibold rounded-full {getStatusColor(order.reviewRequestStatus)}">
-                        {order.reviewRequestStatus}
-                      </span>
-                    {:else}
-                      <span class="text-sm text-gray-500">Not sent</span>
-                    {/if}
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {formatCurrency(order.orderTotal.amount, order.orderTotal.currencyCode)}
-                  </td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
+        
+        <!-- Filter Bar -->
+        <FilterBar 
+          filters={currentFilters} 
+          loading={tableLoading}
+          on:filterChange={async (event) => {
+            currentFilters = event.detail.filters;
+            currentPage = 1;
+            await loadOrders();
+          }}
+        />
+        
+        <!-- Data Table -->
+        <DataTable
+          data={orders}
+          columns={[
+            {
+              key: 'amazonOrderId',
+              label: 'Order ID',
+              sortable: true,
+              width: '200px'
+            },
+            {
+              key: 'deliveryDate',
+              label: 'Delivery Date',
+              sortable: true,
+              width: '150px',
+              render: (value) => format(new Date(value), 'MMM dd, yyyy')
+            },
+            {
+              key: 'orderStatus',
+              label: 'Status',
+              sortable: true,
+              width: '120px',
+              render: (value) => {
+                const colorClass = getStatusColor(value);
+                return `<span class="inline-flex px-2 py-1 text-xs font-semibold rounded-full ${colorClass}">${value}</span>`;
+              }
+            },
+            {
+              key: 'reviewRequestStatus',
+              label: 'Review Request',
+              sortable: true,
+              width: '140px',
+              render: (value, row) => {
+                if (value) {
+                  const colorClass = getStatusColor(value);
+                  return `<span class="inline-flex px-2 py-1 text-xs font-semibold rounded-full ${colorClass}">${value}</span>`;
+                }
+                return 'Not sent';
+              }
+            },
+            {
+              key: 'orderTotal',
+              label: 'Total',
+              sortable: true,
+              width: '120px',
+              align: 'right',
+              render: (value) => formatCurrency(value.amount, value.currencyCode)
+            }
+          ]}
+          loading={tableLoading}
+          pagination={{
+            page: currentPage,
+            limit: pageSize,
+            total: totalOrders,
+            totalPages: totalPages
+          }}
+          filters={currentFilters}
+          {sortBy}
+          {sortOrder}
+          on:sort={async (event) => {
+            sortBy = event.detail.sortBy;
+            sortOrder = event.detail.sortOrder;
+            await loadOrders();
+          }}
+          on:pageChange={async (event) => {
+            currentPage = event.detail.page;
+            await loadOrders();
+          }}
+        />
       </div>
     {/if}
   </main>

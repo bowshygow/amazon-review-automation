@@ -1,6 +1,6 @@
 # Amazon Review Automation
 
-A fullstack application built with SvelteKit and Supabase that automatically sends review requests for Amazon orders, following Amazon's policies and best practices.
+A fullstack application built with SvelteKit and PostgreSQL that automatically sends review requests for Amazon orders, following Amazon's policies and best practices.
 
 ## 🚀 Features
 
@@ -26,15 +26,14 @@ A fullstack application built with SvelteKit and Supabase that automatically sen
 
 - **Frontend**: SvelteKit with TypeScript
 - **Styling**: Tailwind CSS
-- **Database**: Supabase (PostgreSQL)
-- **Authentication**: Supabase Auth
+- **Database**: PostgreSQL with Prisma ORM
 - **API Integration**: Amazon Selling Partner API
 - **Deployment**: Vercel/Netlify ready
 
 ## 📋 Prerequisites
 
 - Node.js 24.x or higher
-- Supabase account and project
+- PostgreSQL database (local or cloud)
 - Amazon Selling Partner API credentials
 
 ## 🚀 Quick Start
@@ -58,9 +57,12 @@ cp env.example .env.local
 Fill in your configuration:
 
 ```env
-# Supabase Configuration
-PUBLIC_SUPABASE_URL=your_supabase_project_url
-PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+# Database Configuration
+DB_HOST=localhost
+DB_PORT=5432
+DB_USERNAME=your_username
+DB_PASSWORD=your_password
+DB_NAME=your_database_name
 
 # Amazon SP API Configuration
 AMAZON_CLIENT_ID=your_amazon_client_id
@@ -71,12 +73,20 @@ AMAZON_MARKETPLACE_ID=your_marketplace_id
 
 ### 3. Database Setup
 
-1. Create a new Supabase project
-2. Run the database schema in your Supabase SQL editor:
+1. Set up a PostgreSQL database (local or cloud)
+2. Run the database setup script:
 
-```sql
--- Copy and paste the contents of supabase-schema.sql
+```bash
+chmod +x scripts/setup-database.sh
+./scripts/setup-database.sh
 ```
+
+This will:
+- Check database connectivity
+- Generate Prisma client
+- Push database schema
+- Seed with sample data
+- Verify setup
 
 ### 4. Development
 
@@ -92,14 +102,14 @@ Visit `http://localhost:5173` to see the application.
 
 1. **amazon_orders**: Stores all Amazon orders with delivery and review request status
 2. **review_requests**: Tracks all review request attempts and their outcomes
-3. **amazon_api_config**: Stores Amazon API credentials and configuration
+3. **amazon_config**: Stores Amazon API configuration (if using database storage)
 4. **activity_logs**: Comprehensive audit trail of all system actions
 
 ### Key Relationships
 
 - Each order can have multiple review request attempts
 - Activity logs reference orders for detailed tracking
-- API configuration is centralized for easy management
+- API configuration is managed via environment variables
 
 ## 🔧 Configuration
 
@@ -113,12 +123,12 @@ Visit `http://localhost:5173` to see the application.
    - Reports API
    - Solicitations API
 
-### Supabase Configuration
+### Database Configuration
 
-1. **Create Project**: Set up a new Supabase project
-2. **Run Schema**: Execute the provided SQL schema
-3. **Configure RLS**: Adjust Row Level Security policies as needed
-4. **Get Credentials**: Copy your project URL and anon key
+1. **Set up PostgreSQL**: Use a local or cloud PostgreSQL database
+2. **Configure Environment**: Set the database connection variables in your `.env` file
+3. **Run Setup**: Use the provided setup script to initialize the database
+4. **Verify Connection**: The setup script will verify connectivity and schema
 
 ## 🎯 How It Works
 
@@ -202,7 +212,7 @@ Visit `http://localhost:5173` to see the application.
 
 - `POST /api/automation/run-daily`: Trigger daily automation
 - `POST /api/automation/retry-failed`: Retry failed review requests
-- `POST /api/automation/sync-orders`: Sync orders from Amazon
+- `POST /api/orders/sync`: Sync orders from Amazon
 
 ### Data Endpoints
 

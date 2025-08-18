@@ -1,44 +1,55 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { AutomationService } from '$lib/automation-service';
-import { DatabaseService } from '$lib/database';
-import { AMAZON_CLIENT_ID, AMAZON_CLIENT_SECRET, AMAZON_REFRESH_TOKEN, AMAZON_MARKETPLACE_ID } from '$env/static/private';
+import { AmazonService } from '$lib/db/services/amazon';
+import { logger } from '$lib/logger';
 
-export const POST: RequestHandler = async () => {
+export const POST: RequestHandler = async ({ request }) => {
+  const startTime = Date.now();
+  
   try {
-    // Get Amazon API config from database
-    const db = new DatabaseService();
-    const configResult = await db.getAmazonConfig();
-    
-    if (!configResult.success || !configResult.data) {
-      return json({ 
-        success: false, 
-        error: 'Amazon API configuration not found' 
-      }, { status: 400 });
-    }
-
-    const config = configResult.data;
-
-    // Initialize automation service
-    const automationService = new AutomationService({
-      clientId: config.client_id,
-      clientSecret: config.client_secret,
-      refreshToken: config.refresh_token,
-      marketplaceId: config.marketplace_id
+    logger.info('Starting daily automation process', {
+      endpoint: '/api/automation/run-daily',
+      method: 'POST'
     });
 
+    // Initialize Amazon service (handles both API and database operations)
+    const amazonService = new AmazonService();
+
     // Run daily automation
-    const result = await automationService.runDailyAutomation();
+    const result = await amazonService.runDailyAutomation();
+
+    const duration = Date.now() - startTime;
+    
+    logger.info('Daily automation completed successfully', {
+      endpoint: '/api/automation/run-daily',
+      duration,
+      processed: result.processed,
+      sent: result.sent,
+      failed: result.failed,
+      skipped: result.skipped,
+      success: result.success
+    });
 
     return json({
       success: result.success,
       processed: result.processed,
-      errors: result.errors,
-      message: `Automation completed. Processed: ${result.processed}, Errors: ${result.errors.length}`
+      sent: result.sent,
+      failed: result.failed,
+      skipped: result.skipped,
+      message: `Automation completed. Processed: ${result.processed}, Sent: ${result.sent}, Failed: ${result.failed}, Skipped: ${result.skipped}`
     });
 
   } catch (error: any) {
-    console.error('Daily automation error:', error);
+    const duration = Date.now() - startTime;
+    
+    logger.error('Daily automation failed', {
+      error: { message: error.message, stack_trace: error.stack },
+      endpoint: '/api/automation/run-daily',
+      method: 'POST',
+      duration,
+      userAgent: request.headers.get('user-agent')
+    });
+    
     return json({ 
       success: false, 
       error: error.message || 'Internal server error' 

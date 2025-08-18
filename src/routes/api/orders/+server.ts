@@ -1,9 +1,18 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { DatabaseService } from '$lib/database';
+import { DatabaseService } from '$lib/db/services/database';
+import { logger } from '$lib/logger';
 
-export const GET: RequestHandler = async ({ url }) => {
+export const GET: RequestHandler = async ({ url, request }) => {
+  const startTime = Date.now();
+  
   try {
+    logger.info('Fetching orders', {
+      endpoint: '/api/orders',
+      method: 'GET',
+      query: url.search
+    });
+
     const db = new DatabaseService();
 
     // Parse query parameters
@@ -11,11 +20,11 @@ export const GET: RequestHandler = async ({ url }) => {
     const limit = parseInt(url.searchParams.get('limit') || '20');
     const dateFrom = url.searchParams.get('dateFrom') || undefined;
     const dateTo = url.searchParams.get('dateTo') || undefined;
-    const status = url.searchParams.get('status')?.split(',') || undefined;
+    const status = url.searchParams.get('status')?.split(',') as any[] || undefined;
     const marketplaceId = url.searchParams.get('marketplaceId') || undefined;
     const isReturned = url.searchParams.get('isReturned') ? 
       url.searchParams.get('isReturned') === 'true' : undefined;
-    const reviewRequestStatus = url.searchParams.get('reviewRequestStatus')?.split(',') || undefined;
+    const reviewRequestStatus = url.searchParams.get('reviewRequestStatus')?.split(',') as any[] || undefined;
     const search = url.searchParams.get('search') || undefined;
     const sortBy = url.searchParams.get('sortBy') || undefined;
     const sortOrder = (url.searchParams.get('sortOrder') as 'asc' | 'desc') || 'desc';
@@ -42,12 +51,16 @@ export const GET: RequestHandler = async ({ url }) => {
     // Get orders
     const result = await db.getOrders(filters, pagination);
 
-    if (!result.success) {
-      return json({ 
-        success: false, 
-        error: result.error 
-      }, { status: 500 });
-    }
+    const duration = Date.now() - startTime;
+    
+    logger.info('Orders fetched successfully', {
+      endpoint: '/api/orders',
+      duration,
+      total: result.total,
+      page,
+      limit,
+      filters
+    });
 
     return json({
       success: true,
@@ -55,11 +68,21 @@ export const GET: RequestHandler = async ({ url }) => {
       total: result.total,
       page,
       limit,
-      totalPages: Math.ceil((result.total || 0) / limit)
+      totalPages: Math.ceil(result.total / limit)
     });
 
   } catch (error: any) {
-    console.error('Get orders error:', error);
+    const duration = Date.now() - startTime;
+    
+    logger.error('Failed to fetch orders', {
+      error: { message: error.message, stack_trace: error.stack },
+      endpoint: '/api/orders',
+      method: 'GET',
+      duration,
+      query: url.search,
+      userAgent: request.headers.get('user-agent')
+    });
+    
     return json({ 
       success: false, 
       error: error.message || 'Internal server error' 
