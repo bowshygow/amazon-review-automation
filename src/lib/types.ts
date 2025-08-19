@@ -287,7 +287,7 @@ export interface LegacyAmazonOrder {
   id: string;
   amazonOrderId: string;
   purchaseDate: string;
-  deliveryDate: string;
+  deliveryDate?: string | null;
   orderStatus: string;
   orderTotal: {
     currencyCode: string;

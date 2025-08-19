@@ -15,7 +15,7 @@ model AmazonOrder {
   id                    String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
   amazonOrderId        String   @unique @map("amazon_order_id")
   purchaseDate         DateTime @map("purchase_date")
-  deliveryDate         DateTime @map("delivery_date")
+  deliveryDate         DateTime? @map("delivery_date")
   orderStatus          String   @default("Shipped") @map("order_status")
   orderTotal           Json     @map("order_total")
   marketplaceId        String   @map("marketplace_id")

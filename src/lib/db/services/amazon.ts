@@ -147,8 +147,24 @@ export class AmazonService {
                  await this.db.createOrder(dbOrder);
                  return { success: true, type: 'new', orderId: order.AmazonOrderId };
                } else {
-                 // Update existing order if needed
-                 await this.db.updateOrder(existingOrder.id!, dbOrder);
+                 // Update existing order with latest API fields (explicitly include nulls)
+                 await this.db.updateOrder(existingOrder.id!, {
+                   amazonOrderId: dbOrder.amazonOrderId,
+                   purchaseDate: dbOrder.purchaseDate,
+                   deliveryDate: dbOrder.deliveryDate ?? null,
+                   orderStatus: dbOrder.orderStatus,
+                   orderTotal: {
+                     currencyCode: dbOrder.orderTotal.currencyCode,
+                     amount: dbOrder.orderTotal.amount
+                   },
+                   marketplaceId: dbOrder.marketplaceId,
+                   buyerInfo: {
+                     email: dbOrder.buyerInfo.email,
+                     name: dbOrder.buyerInfo.name
+                   }
+                   // Note: intentionally not updating items, isReturned, and all reviewRequest* fields here
+                   // to avoid overwriting internal automation state with API defaults
+                 });
                  return { success: true, type: 'updated', orderId: order.AmazonOrderId };
                }
              } catch (error) {
@@ -449,6 +465,7 @@ export class AmazonService {
     if (order.orderStatus !== 'Shipped' && order.orderStatus !== 'PartiallyShipped') return false;
 
     // Check delivery date (must be at least 25 days old)
+    if (!order.deliveryDate) return false;
     const deliveryDate = new Date(order.deliveryDate);
     const twentyFiveDaysAgo = addDays(new Date(), -25);
     
@@ -547,10 +564,8 @@ export class AmazonService {
    * Convert Amazon SP API order to legacy format for database storage
    */
   private convertAmazonOrderToLegacy(amazonOrder: AmazonOrder): LegacyAmazonOrder {
-    // Extract delivery date from latest delivery date or use purchase date as fallback
-    const deliveryDate = amazonOrder.LatestDeliveryDate || 
-                        amazonOrder.EarliestDeliveryDate || 
-                        amazonOrder.PurchaseDate;
+    // Extract delivery date from latest or earliest delivery date
+    const deliveryDate = amazonOrder.LatestDeliveryDate || amazonOrder.EarliestDeliveryDate || null;
 
     // Extract buyer info
     const buyerEmail = amazonOrder.BuyerInfo?.BuyerEmail || '';

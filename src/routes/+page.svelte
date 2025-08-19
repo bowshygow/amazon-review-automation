@@ -390,11 +390,18 @@
               width: '200px'
             },
             {
+              key: 'purchaseDate',
+              label: 'Purchase Date',
+              sortable: true,
+              width: '150px',
+              render: (value) => value ? format(new Date(value), 'MMM dd, yyyy') : '—'
+            },
+            {
               key: 'deliveryDate',
               label: 'Delivery Date',
               sortable: true,
               width: '150px',
-              render: (value) => format(new Date(value), 'MMM dd, yyyy')
+              render: (value) => value ? format(new Date(value), 'MMM dd, yyyy') : '—'
             },
             {
               key: 'orderStatus',

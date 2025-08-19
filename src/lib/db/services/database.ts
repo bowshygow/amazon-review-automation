@@ -35,7 +35,7 @@ export class DatabaseService {
             data: {
               amazonOrderId: order.amazonOrderId,
               purchaseDate: new Date(order.purchaseDate),
-              deliveryDate: new Date(order.deliveryDate),
+              deliveryDate: order.deliveryDate ? new Date(order.deliveryDate) : null,
               orderStatus: order.orderStatus as any,
               orderTotal: {
                 currencyCode: order.orderTotal.currencyCode,
@@ -222,7 +222,7 @@ export class DatabaseService {
 
         if (updates.amazonOrderId !== undefined) updateData.amazonOrderId = updates.amazonOrderId;
         if (updates.purchaseDate !== undefined) updateData.purchaseDate = new Date(updates.purchaseDate);
-        if (updates.deliveryDate !== undefined) updateData.deliveryDate = new Date(updates.deliveryDate);
+        if (updates.deliveryDate !== undefined) updateData.deliveryDate = updates.deliveryDate ? new Date(updates.deliveryDate) : null;
         if (updates.orderStatus !== undefined) updateData.orderStatus = updates.orderStatus;
         if (updates.orderTotal !== undefined) {
           updateData.orderTotal = {
@@ -273,6 +273,7 @@ export class DatabaseService {
     return await this.executeWithRetry(async () => {
       const client = await databaseManager.getClient();
       // Use optimized query with proper indexing
+      // TODO: Add a condiiton such that delivery date should be in the range of 25 - 30 days
       const orders = await client.amazonOrder.findMany({
         where: {
           isReturned: false,
@@ -496,7 +497,7 @@ export class DatabaseService {
           // Apply the same update logic as single update
           if (orderUpdates.amazonOrderId !== undefined) updateData.amazonOrderId = orderUpdates.amazonOrderId;
           if (orderUpdates.purchaseDate !== undefined) updateData.purchaseDate = new Date(orderUpdates.purchaseDate);
-          if (orderUpdates.deliveryDate !== undefined) updateData.deliveryDate = new Date(orderUpdates.deliveryDate);
+          if (orderUpdates.deliveryDate !== undefined) updateData.deliveryDate = orderUpdates.deliveryDate ? new Date(orderUpdates.deliveryDate) : null;
           if (orderUpdates.orderStatus !== undefined) updateData.orderStatus = orderUpdates.orderStatus;
           if (orderUpdates.orderTotal !== undefined) {
             updateData.orderTotal = {
@@ -585,7 +586,7 @@ export class DatabaseService {
       id: dbOrder.id,
       amazonOrderId: dbOrder.amazonOrderId,
       purchaseDate: dbOrder.purchaseDate.toISOString(),
-      deliveryDate: dbOrder.deliveryDate.toISOString(),
+      deliveryDate: dbOrder.deliveryDate ? dbOrder.deliveryDate.toISOString() : null,
       orderStatus: dbOrder.orderStatus,
       orderTotal: {
         currencyCode: dbOrder.orderTotal.currencyCode,
