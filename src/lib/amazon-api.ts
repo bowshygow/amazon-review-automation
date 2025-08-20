@@ -106,7 +106,7 @@ export class AmazonSPAPI {
       const query: Record<string, unknown> = {
         MarketplaceIds: [this.config.marketplaceId],
         CreatedAfter: createdAfter,
-        OrderStatuses: ['Shipped', 'PartiallyShipped'], // Only get orders that are shipped/partially shipped
+        // OrderStatuses: ['Shipped', 'PartiallyShipped'], // Only get orders that are shipped/partially shipped
         MaxResultsPerPage: 50 // Limit results per page
       };
 
