@@ -15,28 +15,43 @@ export const POST: RequestHandler = async ({ request }) => {
     // Initialize Amazon service (handles both API and database operations)
     const amazonService = new AmazonService();
 
-    // Run daily automation
-    const result = await amazonService.runDailyAutomation();
+    // Run enhanced daily automation (includes returns processing)
+    const result = await amazonService.runEnhancedDailyAutomation();
 
     const duration = Date.now() - startTime;
     
-    logger.info('Daily automation completed successfully', {
+    logger.info('Enhanced daily automation completed successfully', {
       endpoint: '/api/automation/run-daily',
       duration,
-      processed: result.processed,
-      sent: result.sent,
-      failed: result.failed,
-      skipped: result.skipped,
+      returnsProcessed: result.returnsProcessed,
+      ordersUpdated: result.ordersUpdated,
+      reviewRequestsProcessed: result.reviewRequestsProcessed,
+      reviewRequestsSent: result.reviewRequestsSent,
+      reviewRequestsFailed: result.reviewRequestsFailed,
+      reviewRequestsSkipped: result.reviewRequestsSkipped,
+      // Backward compatibility
+      processed: result.reviewRequestsProcessed,
+      sent: result.reviewRequestsSent,
+      failed: result.reviewRequestsFailed,
+      skipped: result.reviewRequestsSkipped,
       success: result.success
     });
 
     return json({
       success: result.success,
-      processed: result.processed,
-      sent: result.sent,
-      failed: result.failed,
-      skipped: result.skipped,
-      message: `Automation completed. Processed: ${result.processed}, Sent: ${result.sent}, Failed: ${result.failed}, Skipped: ${result.skipped}`
+      // Enhanced automation properties
+      returnsProcessed: result.returnsProcessed,
+      ordersUpdated: result.ordersUpdated,
+      reviewRequestsProcessed: result.reviewRequestsProcessed,
+      reviewRequestsSent: result.reviewRequestsSent,
+      reviewRequestsFailed: result.reviewRequestsFailed,
+      reviewRequestsSkipped: result.reviewRequestsSkipped,
+      // Backward compatibility properties for frontend
+      processed: result.reviewRequestsProcessed,
+      sent: result.reviewRequestsSent,
+      failed: result.reviewRequestsFailed,
+      skipped: result.reviewRequestsSkipped,
+      message: `Enhanced automation completed. Returns processed: ${result.returnsProcessed}, Orders updated: ${result.ordersUpdated}, Review requests processed: ${result.reviewRequestsProcessed}, Sent: ${result.reviewRequestsSent}, Failed: ${result.reviewRequestsFailed}, Skipped: ${result.reviewRequestsSkipped}`
     });
 
   } catch (error: any) {

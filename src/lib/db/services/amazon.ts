@@ -9,6 +9,7 @@ import type {
 import { ReviewRequestStatus } from '$lib/types';
 import { addDays, isBefore } from 'date-fns';
 import pLimit from 'p-limit';
+import { logger } from '$lib/logger';
 
 export class AmazonService {
   private db: DatabaseService;
@@ -250,94 +251,6 @@ export class AmazonService {
   }
 
   // ===== REVIEW REQUEST AUTOMATION =====
-  
-  /**
-   * Main automation function - runs daily to process review requests
-   */
-  async runDailyAutomation(): Promise<{ success: boolean; processed: number; sent: number; failed: number; skipped: number }> {
-    try {
-      // Check if API is configured
-      if (!(await this.isApiConfigured())) {
-        throw new Error('Amazon API is not properly configured. Please set up your API credentials first.');
-      }
-
-      // Get orders eligible for review requests
-      const eligibleOrders = await this.db.getOrdersEligibleForReview();
-      
-      let processed = 0;
-      let sent = 0;
-      let failed = 0;
-      let skipped = 0;
-
-      // Process each eligible order
-      for (const order of eligibleOrders) {
-        try {
-          processed++;
-          
-          // Check if order is still eligible (double-check business rules)
-          if (!this.isOrderEligibleForReview(order)) {
-            await this.markOrderAsSkipped(order.id, 'Order no longer eligible');
-            skipped++;
-            continue;
-          }
-
-          // Send review request via Amazon API
-          const result = await this.sendReviewRequest(order);
-          
-          if (result.success) {
-            // Update order and create review request record
-            await this.db.updateOrder(order.id, {
-              reviewRequestSent: true,
-              reviewRequestDate: new Date().toISOString(),
-              reviewRequestStatus: ReviewRequestStatus.SENT
-            });
-
-            await this.db.createReviewRequest({
-              orderId: order.id,
-              amazonOrderId: order.amazonOrderId,
-              status: ReviewRequestStatus.SENT,
-              sentAt: new Date().toISOString(),
-              retryCount: 0
-            });
-
-            sent++;
-          } else if (result.notEligible) {
-            // Handle not eligible case - mark as skipped, not failed
-            await this.markOrderAsSkipped(order.id, result.error ?? 'No solicitation actions available');
-            skipped++;
-          } else {
-            // Handle actual failure
-            await this.handleReviewRequestFailure(order, result.error ?? 'Unknown error');
-            failed++;
-          }
-        } catch (error) {
-          console.error(`Failed to process order ${order.id}:`, error);
-          await this.handleReviewRequestFailure(order, error instanceof Error ? error.message : 'Unknown error');
-          failed++;
-        }
-      }
-
-      // Log automation results
-      await this.db.logActivity('daily_automation_completed', {
-        processed,
-        sent,
-        failed,
-        skipped,
-        timestamp: new Date().toISOString()
-      });
-
-      return { success: true, processed, sent, failed, skipped };
-    } catch (error) {
-      console.error('Daily automation failed:', error);
-      
-      await this.db.logActivity('daily_automation_failed', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-        timestamp: new Date().toISOString()
-      });
-
-      return { success: false, processed: 0, sent: 0, failed: 0, skipped: 0 };
-    }
-  }
 
   /**
    * Retry failed review requests
@@ -448,6 +361,270 @@ export class AmazonService {
       });
 
       return { success: false, retried: 0, successCount: 0 };
+    }
+  }
+
+  /**
+   * Process returns report and update orders with return information
+   */
+  async processReturnsReport(dataStartTime: Date, dataEndTime: Date): Promise<{
+    success: boolean;
+    reportId?: string;
+    processedReturns: number;
+    updatedOrders: number;
+    errors: number;
+  }> {
+    try {
+      const api = await this.initializeApi();
+      
+      logger.info('Starting returns report processing', {
+        dataStartTime: dataStartTime.toISOString(),
+        dataEndTime: dataEndTime.toISOString()
+      });
+
+      // Step 1: Create returns report
+      const createReportResponse = await api.createReturnsReport(
+        dataStartTime.toISOString(),
+        dataEndTime.toISOString()
+      );
+      
+      const reportId = createReportResponse.reportId;
+      if (!reportId) {
+        throw new Error('No report ID returned from Amazon API');
+      }
+
+      logger.info('Returns report created', { reportId });
+
+      // Step 2: Wait for report to be ready
+      const report = await api.waitForReportReady(reportId);
+      
+      if (!report.reportDocumentId) {
+        throw new Error('No report document ID in completed report');
+      }
+
+      // Step 3: Download and parse report data
+      const returnsData = await api.downloadReturnsReport(report.reportDocumentId);
+      
+      logger.info('Returns report data downloaded', { 
+        rowCount: returnsData.length,
+        reportId,
+        reportDocumentId: report.reportDocumentId
+      });
+
+      // Step 4: Process returns data and update orders
+      let processedReturns = 0;
+      let updatedOrders = 0;
+      let errors = 0;
+
+      for (const returnRecord of returnsData) {
+        try {
+          const orderId = returnRecord['Order ID'];
+      
+          const returnDate = returnRecord['Return request date'];
+          const returnStatus = returnRecord['Return request status'];
+          const isInPolicy = returnRecord['In policy'] === 'Y';
+
+          if (!orderId) {
+            logger.warn('Return record missing order ID', { returnRecord });
+            continue;
+          }
+
+          // Find the order in our database
+          const order = await this.db.getOrderByAmazonOrderId(orderId);
+          
+          if (!order) {
+            logger.warn('Order not found in database for return', { 
+              orderId,
+              returnDate,
+              returnStatus 
+            });
+            continue;
+          }
+
+                     // Update order with return information (simplified - just mark as returned)
+           await this.db.updateOrder(order.id, {
+             isReturned: true,
+             returnDate: returnDate ? new Date(returnDate) : null
+           });
+
+          updatedOrders++;
+          processedReturns++;
+
+          logger.info('Order updated with return information', {
+            orderId,
+            returnDate,
+            returnStatus,
+            isInPolicy
+          });
+
+        } catch (error) {
+          errors++;
+          logger.error('Error processing return record', {
+            error: error instanceof Error ? error.message : 'Unknown error',
+            returnRecord
+          });
+        }
+      }
+
+      // Log activity
+      await this.db.logActivity('returns_report_processed', {
+        reportId,
+        processedReturns,
+        updatedOrders,
+        errors,
+        dataStartTime: dataStartTime.toISOString(),
+        dataEndTime: dataEndTime.toISOString()
+      });
+
+      return {
+        success: true,
+        reportId,
+        processedReturns,
+        updatedOrders,
+        errors
+      };
+
+    } catch (error) {
+      logger.error('Returns report processing failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        dataStartTime: dataStartTime.toISOString(),
+        dataEndTime: dataEndTime.toISOString()
+      });
+
+      return {
+        success: false,
+        processedReturns: 0,
+        updatedOrders: 0,
+        errors: 1
+      };
+    }
+  }
+
+  /**
+   * Enhanced daily automation that includes returns processing
+   */
+  async runEnhancedDailyAutomation(): Promise<{
+    success: boolean;
+    returnsProcessed: number;
+    ordersUpdated: number;
+    reviewRequestsProcessed: number;
+    reviewRequestsSent: number;
+    reviewRequestsFailed: number;
+    reviewRequestsSkipped: number;
+  }> {
+    try {
+      logger.info('Starting enhanced daily automation with returns processing');
+
+      // Step 1: Process returns report for the last 30 days
+      const returnsEndDate = new Date();
+      const returnsStartDate = new Date();
+      returnsStartDate.setDate(returnsStartDate.getDate() - 30);
+
+      const returnsResult = await this.processReturnsReport(returnsStartDate, returnsEndDate);
+      
+      if (!returnsResult.success) {
+        logger.error('Returns report processing failed, continuing with review requests');
+      }
+
+      // Step 2: Process review requests
+      const eligibleOrders = await this.db.getOrdersEligibleForReview();
+      
+      let processed = 0;
+      let sent = 0;
+      let failed = 0;
+      let skipped = 0;
+
+      // Process each eligible order
+      for (const order of eligibleOrders) {
+        try {
+          processed++;
+          
+          // Check if order is still eligible (double-check business rules)
+          if (!this.isOrderEligibleForReview(order)) {
+            await this.markOrderAsSkipped(order.id, 'Order no longer eligible');
+            skipped++;
+            continue;
+          }
+
+          // Send review request via Amazon API
+          const result = await this.sendReviewRequest(order);
+          
+          if (result.success) {
+            // Update order and create review request record
+            await this.db.updateOrder(order.id, {
+              reviewRequestSent: true,
+              reviewRequestDate: new Date().toISOString(),
+              reviewRequestStatus: ReviewRequestStatus.SENT
+            });
+
+            await this.db.createReviewRequest({
+              orderId: order.id,
+              amazonOrderId: order.amazonOrderId,
+              status: ReviewRequestStatus.SENT,
+              sentAt: new Date().toISOString(),
+              retryCount: 0
+            });
+
+            sent++;
+          } else if (result.notEligible) {
+            // Handle not eligible case - mark as skipped, not failed
+            await this.markOrderAsSkipped(order.id, result.error ?? 'No solicitation actions available');
+            skipped++;
+          } else {
+            // Handle actual failure
+            await this.handleReviewRequestFailure(order, result.error ?? 'Unknown error');
+            failed++;
+          }
+        } catch (error) {
+          console.error(`Failed to process order ${order.id}:`, error);
+          await this.handleReviewRequestFailure(order, error instanceof Error ? error.message : 'Unknown error');
+          failed++;
+        }
+      }
+
+      const reviewResult = { success: true, processed, sent, failed, skipped };
+
+      // Step 3: Log comprehensive results
+      await this.db.logActivity('enhanced_daily_automation_completed', {
+        returnsProcessed: returnsResult.processedReturns,
+        ordersUpdated: returnsResult.updatedOrders,
+        returnsErrors: returnsResult.errors,
+        reviewRequestsProcessed: reviewResult.processed,
+        reviewRequestsSent: reviewResult.sent,
+        reviewRequestsFailed: reviewResult.failed,
+        reviewRequestsSkipped: reviewResult.skipped,
+        timestamp: new Date().toISOString()
+      });
+
+      return {
+        success: reviewResult.success,
+        returnsProcessed: returnsResult.processedReturns,
+        ordersUpdated: returnsResult.updatedOrders,
+        reviewRequestsProcessed: reviewResult.processed,
+        reviewRequestsSent: reviewResult.sent,
+        reviewRequestsFailed: reviewResult.failed,
+        reviewRequestsSkipped: reviewResult.skipped
+      };
+
+    } catch (error) {
+      logger.error('Enhanced daily automation failed', {
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+
+      await this.db.logActivity('enhanced_daily_automation_failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        timestamp: new Date().toISOString()
+      });
+
+      return {
+        success: false,
+        returnsProcessed: 0,
+        ordersUpdated: 0,
+        reviewRequestsProcessed: 0,
+        reviewRequestsSent: 0,
+        reviewRequestsFailed: 0,
+        reviewRequestsSkipped: 0
+      };
     }
   }
 

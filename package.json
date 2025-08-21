@@ -19,15 +19,10 @@
 		"db:seed": "tsx prisma/seed.ts",
 		"db:reset": "prisma migrate reset --force",
 		"db:deploy": "prisma migrate deploy",
-		"db:setup": "bash scripts/setup-database.sh",
-		"db:health": "tsx scripts/check-health.ts",
-		"db:backup": "tsx scripts/create-backup.ts",
-		"db:monitor": "tsx scripts/monitor-performance.ts",
 		"db:validate": "prisma validate",
 		"db:format": "prisma format",
 		"db:lint": "prisma lint",
-		"test:amazon-api": "node scripts/test-amazon-api.js",
-		"test:amazon-api-updated": "node scripts/test-amazon-api-updated.js"
+		"automation:run-daily": "tsx src/scripts/run-daily-automation.ts"
 	},
 	"devDependencies": {
 		"@eslint/compat": "^1.2.5",
@@ -58,7 +53,7 @@
 	"dependencies": {
 		"@elastic/ecs-winston-format": "^1.5.3",
 		"@prisma/client": "^5.22.0",
-		"amazon-sp-api": "^1.0.0",
+		"amazon-sp-api": "^1.1.6",
 		"bcryptjs": "^2.4.3",
 		"date-fns": "^4.1.0",
 		"dotenv": "^17.2.1",

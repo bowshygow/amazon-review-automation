@@ -21,7 +21,7 @@ export class AmazonSPAPI {
       marketplaceId: config.marketplaceId
     });
     
-    // Initialize the Selling Partner API client
+    // Initialize the Selling Partner API client using amazon-sp-api SDK
     this.client = new SellingPartner({
       region: this.getRegionFromMarketplaceId(config.marketplaceId),
       refresh_token: config.refreshToken,
@@ -98,7 +98,7 @@ export class AmazonSPAPI {
     }
   }
 
-  // Get Orders using the SDK - Updated to use correct API structure
+  // Get Orders using the SDK
   async getOrders(createdAfter: string, nextToken?: string): Promise<GetOrdersResponse> {
     const startTime = Date.now();
     
@@ -106,8 +106,7 @@ export class AmazonSPAPI {
       const query: Record<string, unknown> = {
         MarketplaceIds: [this.config.marketplaceId],
         CreatedAfter: createdAfter,
-        // OrderStatuses: ['Shipped', 'PartiallyShipped'], // Only get orders that are shipped/partially shipped
-        MaxResultsPerPage: 50 // Limit results per page
+        MaxResultsPerPage: 50
       };
 
       if (nextToken) {
@@ -163,7 +162,7 @@ export class AmazonSPAPI {
   }
 
   // Get Order Items using the SDK
-  async getOrderItems(orderId: string): Promise<Record<string, unknown>> {
+  async getOrderItems(orderId: string): Promise<Record<string, unknown> | unknown> {
     const startTime = Date.now();
     
     try {
@@ -206,7 +205,7 @@ export class AmazonSPAPI {
   }
 
   // Create Returns Report using the SDK
-  async createReturnsReport(dataStartTime: string, dataEndTime: string): Promise<any> {
+  async createReturnsReport(dataStartTime: string, dataEndTime: string): Promise<Record<string, unknown> | unknown> {
     const startTime = Date.now();
     
     try {
@@ -256,7 +255,7 @@ export class AmazonSPAPI {
   }
 
   // Get Report Status using the SDK
-  async getReport(reportId: string): Promise<any> {
+  async getReport(reportId: string): Promise<Record<string, unknown> | unknown> {
     const startTime = Date.now();
     
     try {
@@ -341,7 +340,106 @@ export class AmazonSPAPI {
     }
   }
 
-  // Get Solicitation Actions for Order using the SDK - Updated to use correct API structure
+  // Download and parse returns report data
+  async downloadReturnsReport(reportDocumentId: string): Promise<Record<string, string>[]> {
+    const startTime = Date.now();
+    
+    try {
+      // First get the report document URL
+      const reportDocument = await this.getReportDocument(reportDocumentId);
+      
+      if (!reportDocument.url) {
+        throw new Error('No download URL found in report document');
+      }
+
+      logger.info('Downloading returns report data', {
+        reportDocumentId,
+        url: reportDocument.url
+      });
+
+      // Download the report data using the SDK's download method
+      const reportData = await this.client.download(reportDocument) as string;
+      console.log("Report Data: ////////////////////////////" + reportData);
+      // Parse the TSV data
+      const lines = reportData.split('\n').filter((line: string) => line.trim());
+      const headers = lines[0].split('\t');
+      const data = lines.slice(1).map((line: string) => {
+        const values = line.split('\t');
+        const row: Record<string, string> = {};
+        headers.forEach((header: string, index: number) => {
+          row[header.trim()] = values[index]?.trim() || '';
+        });
+        return row;
+      });
+
+      const duration = Date.now() - startTime;
+      logger.info('Returns report downloaded and parsed successfully', {
+        aws: {
+          operation: 'downloadReturnsReport',
+          success: true
+        },
+        event: {
+          duration
+        },
+        reportDocumentId,
+        rowCount: data.length
+      });
+
+      return data;
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      logger.error('Failed to download returns report', {
+        aws: {
+          operation: 'downloadReturnsReport',
+          success: false
+        },
+        event: {
+          duration
+        },
+        error: { message: error instanceof Error ? error.message : 'Unknown error' },
+        reportDocumentId
+      });
+      throw new Error(`Failed to download returns report: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  // Wait for report to be ready with polling
+  async waitForReportReady(reportId: string, maxWaitTime: number = 300000): Promise<any> {
+    const startTime = Date.now();
+    const pollInterval = 10000; // 10 seconds
+    
+    logger.info('Waiting for report to be ready', { reportId });
+    
+    while (Date.now() - startTime < maxWaitTime) {
+      try {
+        const report = await this.getReport(reportId);
+        
+        if (report.processingStatus === 'DONE') {
+          logger.info('Report is ready', { 
+            reportId, 
+            processingTime: Date.now() - startTime,
+            reportDocumentId: report.reportDocumentId 
+          });
+          return report;
+        } else if (report.processingStatus === 'FATAL') {
+          throw new Error(`Report processing failed: ${report.dataEndTime}`);
+        }
+        
+        // Wait before next poll
+        await new Promise(resolve => setTimeout(resolve, pollInterval));
+      } catch (error) {
+        logger.error('Error checking report status', { 
+          reportId, 
+          error: error instanceof Error ? error.message : 'Unknown error' 
+        });
+        throw error;
+      }
+    }
+    
+    throw new Error(`Report did not complete within ${maxWaitTime}ms`);
+  }
+
+  // Get Solicitation Actions for Order using the SDK
   async getSolicitationActions(orderId: string): Promise<GetSolicitationActionsForOrderResponse> {
     const startTime = Date.now();
     
@@ -395,7 +493,7 @@ export class AmazonSPAPI {
     }
   }
 
-  // Create Product Review and Seller Feedback Solicitation using the SDK - Updated with proper parameters
+  // Create Product Review and Seller Feedback Solicitation using the SDK
   async createReviewSolicitation(orderId: string): Promise<CreateProductReviewAndSellerFeedbackSolicitationResponse | { notEligible: true; reason: string }> {
     const startTime = Date.now();
     
@@ -525,7 +623,7 @@ export class AmazonSPAPI {
     return this.client;
   }
 
-    // Test API connection
+  // Test API connection
   async testConnection(): Promise<boolean> {
     const startTime = Date.now();
     
