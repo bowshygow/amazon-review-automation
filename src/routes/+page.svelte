@@ -440,6 +440,12 @@
               <p class="text-xs text-gray-600">
                 <strong>Total Orders =</strong> Returned + Ineligible + Review-Eligible
               </p>
+              <p class="text-xs text-gray-600 mt-1">
+                <strong>Calculation:</strong> {stats.returnedOrders} + {stats.ineligibleForReview} + {stats.eligibleForReview} = {stats.returnedOrders + stats.ineligibleForReview + stats.eligibleForReview}
+              </p>
+              <p class="text-xs text-gray-600 mt-1">
+                <strong>Total in DB:</strong> {stats.totalOrders} | <strong>Match:</strong> {stats.totalOrders === (stats.returnedOrders + stats.ineligibleForReview + stats.eligibleForReview) ? '✅' : '❌'}
+              </p>
             </div>
           </div>
         </div>

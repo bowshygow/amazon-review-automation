@@ -253,6 +253,122 @@ export class AmazonService {
   // ===== REVIEW REQUEST AUTOMATION =====
 
   /**
+   * Core function to process a single review request
+   * This is the single source of truth for review request processing logic
+   */
+  private async processReviewRequest(
+    order: LegacyAmazonOrder, 
+    options: {
+      isRetry?: boolean;
+      existingRequestId?: string;
+      currentRetryCount?: number;
+    } = {}
+  ): Promise<{
+    success: boolean;
+    status: 'SENT' | 'FAILED' | 'SKIPPED' | 'NOT_ELIGIBLE';
+    error?: string;
+    reviewRequestId?: string;
+  }> {
+    try {
+      // Validate order exists and is eligible
+      if (!this.isOrderEligibleForReview(order)) {
+        logger.info('Order not eligible for review request', {
+          orderId: order.id,
+          amazonOrderId: order.amazonOrderId,
+          reason: 'Business rules validation failed'
+        });
+        
+        await this.markOrderAsSkipped(order.id, 'Order not eligible for review');
+        return { success: false, status: 'SKIPPED', error: 'Order not eligible for review' };
+      }
+
+      // Send review request via Amazon API with verification
+      const result = await this.sendReviewRequest(order);
+      
+      if (result.success) {
+        // Update order and create/update review request in a single transaction
+        logger.info('Review request successful - updating database in transaction...', { 
+          orderId: order.id,
+          isRetry: options.isRetry 
+        });
+
+        if (options.isRetry && options.existingRequestId) {
+          // For retries, update existing review request
+          await Promise.all([
+            this.db.updateOrder(order.id, {
+              reviewRequestSent: true,
+              reviewRequestDate: new Date().toISOString(),
+              reviewRequestStatus: ReviewRequestStatus.SENT
+            }),
+                         this.db.updateReviewRequest(options.existingRequestId, {
+               status: ReviewRequestStatus.SENT,
+               sentAt: new Date().toISOString(),
+               retryCount: (options.currentRetryCount || 0) + 1
+             })
+          ]);
+          
+          logger.info('Retry transaction completed successfully', { 
+            orderId: order.id,
+            requestId: options.existingRequestId 
+          });
+          
+          return { 
+            success: true, 
+            status: 'SENT', 
+            reviewRequestId: options.existingRequestId 
+          };
+        } else {
+          // For new requests, create new review request
+          const dbResult = await this.db.updateOrderAndCreateReviewRequest(
+            order.id,
+            {
+              reviewRequestSent: true,
+              reviewRequestDate: new Date().toISOString(),
+              reviewRequestStatus: ReviewRequestStatus.SENT
+            },
+            {
+              orderId: order.id,
+              amazonOrderId: order.amazonOrderId,
+              status: ReviewRequestStatus.SENT,
+              sentAt: new Date().toISOString(),
+              retryCount: 0
+            }
+          );
+          
+          logger.info('Transaction completed successfully', { 
+            orderId: order.id,
+            reviewRequestId: dbResult.reviewRequest.id
+          });
+          
+          return { 
+            success: true, 
+            status: 'SENT', 
+            reviewRequestId: dbResult.reviewRequest.id 
+          };
+        }
+      } else if (result.notEligible) {
+        // Handle not eligible case - mark as skipped
+        await this.markOrderAsSkipped(order.id, result.error ?? 'No solicitation actions available');
+        return { success: false, status: 'NOT_ELIGIBLE', error: result.error };
+      } else {
+        // Handle actual failure
+        await this.handleReviewRequestFailure(order, result.error ?? 'Unknown error');
+        return { success: false, status: 'FAILED', error: result.error };
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.error('Failed to process review request', {
+        orderId: order.id,
+        amazonOrderId: order.amazonOrderId,
+        error: errorMessage
+      });
+      
+      await this.handleReviewRequestFailure(order, errorMessage);
+      return { success: false, status: 'FAILED', error: errorMessage };
+    }
+  }
+
+  /**
    * Retry failed review requests
    */
   async retryFailedReviewRequests(): Promise<{ success: boolean; retried: number; successCount: number }> {
@@ -272,7 +388,7 @@ export class AmazonService {
       let successCount = 0;
 
       // Process with limited concurrency to avoid DB connection issues
-      const limit = pLimit(7); // Limit to 3 concurrent operations for API calls
+      const limit = pLimit(7);
       
       const retryPromises = retryableRequests.map((request) => 
         limit(async () => {
@@ -282,55 +398,28 @@ export class AmazonService {
             // Get the associated order
             const order = await this.db.getOrderById(request.orderId);
             if (!order) {
-              console.warn(`Order not found for review request ${request.id}`);
-              return;
-            }
-
-            // Check if order is still eligible
-            if (!this.isOrderEligibleForReview(order)) {
-              await this.db.updateReviewRequest(request.id, {
-                status: ReviewRequestStatus.SKIPPED,
-                errorMessage: 'Order no longer eligible for review'
+              logger.warn('Order not found for review request', { 
+                requestId: request.id,
+                orderId: request.orderId 
               });
               return;
             }
 
-            // Attempt to send review request again
-            const result = await this.sendReviewRequest(order);
+                         // Use the core processing function
+             const result = await this.processReviewRequest(order, {
+               isRetry: true,
+               existingRequestId: request.id,
+               currentRetryCount: request.retryCount
+             });
             
             if (result.success) {
-              // Update both order and review request
-              await Promise.all([
-                this.db.updateOrder(order.id, {
-                  reviewRequestSent: true,
-                  reviewRequestDate: new Date().toISOString(),
-                  reviewRequestStatus: ReviewRequestStatus.SENT
-                }),
-                this.db.updateReviewRequest(request.id, {
-                  status: ReviewRequestStatus.SENT,
-                  sentAt: new Date().toISOString(),
-                  retryCount: request.retryCount + 1
-                })
-              ]);
-              
               successCount++;
-            } else if (result.notEligible) {
-              // Handle not eligible case - mark as skipped, not failed
-              await this.db.updateReviewRequest(request.id, {
-                status: ReviewRequestStatus.SKIPPED,
-                errorMessage: result.error,
-                retryCount: request.retryCount + 1
-              });
-            } else {
-              // Update retry count and status for actual failures
-              await this.db.updateReviewRequest(request.id, {
-                status: ReviewRequestStatus.FAILED,
-                errorMessage: result.error,
-                retryCount: request.retryCount + 1
-              });
             }
           } catch (error) {
-            console.error(`Failed to retry review request ${request.id}:`, error);
+            logger.error('Failed to retry review request', {
+              requestId: request.id,
+              error: error instanceof Error ? error.message : 'Unknown error'
+            });
             
             await this.db.updateReviewRequest(request.id, {
               status: ReviewRequestStatus.FAILED,
@@ -353,7 +442,9 @@ export class AmazonService {
 
       return { success: true, retried, successCount };
     } catch (error) {
-      console.error('Retry failed review requests failed:', error);
+      logger.error('Retry failed review requests failed', {
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
       
       await this.db.logActivity('retry_failed_review_requests_failed', {
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -546,35 +637,16 @@ export class AmazonService {
             continue;
           }
 
-          // Send review request via Amazon API
-          const result = await this.sendReviewRequest(order);
-          
-          if (result.success) {
-            // Update order and create review request record
-            await this.db.updateOrder(order.id, {
-              reviewRequestSent: true,
-              reviewRequestDate: new Date().toISOString(),
-              reviewRequestStatus: ReviewRequestStatus.SENT
-            });
-
-            await this.db.createReviewRequest({
-              orderId: order.id,
-              amazonOrderId: order.amazonOrderId,
-              status: ReviewRequestStatus.SENT,
-              sentAt: new Date().toISOString(),
-              retryCount: 0
-            });
-
-            sent++;
-          } else if (result.notEligible) {
-            // Handle not eligible case - mark as skipped, not failed
-            await this.markOrderAsSkipped(order.id, result.error ?? 'No solicitation actions available');
-            skipped++;
-          } else {
-            // Handle actual failure
-            await this.handleReviewRequestFailure(order, result.error ?? 'Unknown error');
-            failed++;
-          }
+                     // Use the core processing function
+           const result = await this.processReviewRequest(order);
+           
+           if (result.success) {
+             sent++;
+           } else if (result.status === 'NOT_ELIGIBLE') {
+             skipped++;
+           } else {
+             failed++;
+           }
         } catch (error) {
           console.error(`Failed to process order ${order.id}:`, error);
           await this.handleReviewRequestFailure(order, error instanceof Error ? error.message : 'Unknown error');
@@ -864,79 +936,13 @@ export class AmazonService {
   /**
    * Trigger a review request for a specific order
    */
-  async triggerReviewRequest(amazonOrderId: string): Promise<{
+    async triggerReviewRequest(amazonOrderId: string): Promise<{
     success: boolean;
     status: string;
     error?: string;
   }> {
     try {
       logger.info('Triggering review request for order', { amazonOrderId });
-      
-      const api = await this.initializeApi();
-      const result = await api.createReviewSolicitation(amazonOrderId);
-      
-      if ('notEligible' in result && result.notEligible) {
-        logger.info('Order not eligible for review request', {
-          amazonOrderId,
-          reason: result.reason
-        });
-        
-        return {
-          success: false,
-          status: 'NOT_ELIGIBLE',
-          error: result.reason
-        };
-      }
-      
-      // Check for errors in the response
-      if ('errors' in result && result.errors && result.errors.length > 0) {
-        const errorMessage = result.errors[0].message;
-        logger.error('Review request creation failed', {
-          amazonOrderId,
-          error: errorMessage
-        });
-        
-        return {
-          success: false,
-          status: 'FAILED',
-          error: errorMessage
-        };
-      }
-      
-      // Verify that the solicitation was actually created by checking actions again
-      logger.info('Verifying solicitation was created by checking actions again', { amazonOrderId });
-      const verificationActions = await api.getSolicitationActions(amazonOrderId);
-      
-      if (verificationActions.errors && verificationActions.errors.length > 0) {
-        logger.error('Failed to verify solicitation creation', {
-          amazonOrderId,
-          error: verificationActions.errors[0].message
-        });
-        return {
-          success: false,
-          status: 'FAILED',
-          error: 'Failed to verify solicitation creation'
-        };
-      }
-      
-      // Check if the order is still eligible (which would indicate the solicitation wasn't created)
-      const stillHasActions = verificationActions.actions?.some(
-        action => action.name === 'productReviewAndSellerFeedback'
-      );
-      
-      if (stillHasActions) {
-        logger.error('Solicitation was not created - order still has actions available', {
-          amazonOrderId,
-          availableActions: verificationActions.actions?.map(action => action.name) || []
-        });
-        return {
-          success: false,
-          status: 'FAILED',
-          error: 'Solicitation was not created - order still eligible for review request'
-        };
-      }
-      
-      logger.info('Solicitation creation verified - order no longer has actions available', { amazonOrderId });
       
       // First, find the order by amazonOrderId to get the database UUID
       const order = await this.db.getOrderByAmazonOrderId(amazonOrderId);
@@ -955,38 +961,13 @@ export class AmazonService {
         currentReviewStatus: order.reviewRequestSent
       });
       
-      // Update order and create review request in a single transaction
-      logger.info('Updating order and creating review request in transaction...', { orderId: order.id });
-      const dbResult = await this.db.updateOrderAndCreateReviewRequest(
-        order.id,
-        {
-          reviewRequestSent: true,
-          reviewRequestDate: new Date().toISOString(),
-          reviewRequestStatus: 'SENT'
-        },
-        {
-          orderId: order.id, // Use the database UUID, not amazonOrderId
-          amazonOrderId: amazonOrderId,
-          status: 'SENT',
-          sentAt: new Date().toISOString(),
-          retryCount: 0
-        }
-      );
-      
-      logger.info('Transaction completed successfully', { 
-        orderId: order.id,
-        newReviewStatus: dbResult.updatedOrder.reviewRequestSent,
-        reviewRequestId: dbResult.reviewRequest.id
-      });
-      
-      logger.info('Review request created successfully', { 
-        amazonOrderId,
-        orderId: order.id 
-      });
+      // Use the core processing function
+      const result = await this.processReviewRequest(order);
       
       return {
-        success: true,
-        status: 'SENT'
+        success: result.success,
+        status: result.status,
+        error: result.error
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';

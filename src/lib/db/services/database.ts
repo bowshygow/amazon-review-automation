@@ -452,8 +452,7 @@ export class DatabaseService {
         reviewRequestsFailed,
         reviewRequestsSkipped,
         returnedOrders,
-        eligibleForReview,
-        ineligibleForReview
+        eligibleForReview
       ] = await Promise.all([
         client.amazonOrder.count(),
         client.amazonOrder.count({ 
@@ -482,20 +481,30 @@ export class DatabaseService {
             deliveryDate: { lte: addDays(new Date(), -25) },
             orderStatus: { in: ['Shipped', 'PartiallyShipped'] }
           }
-        }),
-        client.amazonOrder.count({
-          where: {
-            OR: [
-              { isReturned: true },
-              { orderStatus: { notIn: ['Shipped', 'PartiallyShipped'] } },
-              { deliveryDate: { gt: addDays(new Date(), -25) } }
-            ]
-          }
         })
       ]);
 
+      // Calculate ineligible orders more precisely
+      // Ineligible = Total - Returned - Eligible
+      const ineligibleForReview = totalOrders - returnedOrders - eligibleForReview;
+
       // Calculate pending review requests (eligible but not yet processed)
       const pendingReviewRequests = eligibleForReview;
+
+      // Log the calculations for debugging
+      logger.info('Dashboard stats calculated', {
+        totalOrders,
+        returnedOrders,
+        eligibleForReview,
+        ineligibleForReview,
+        calculatedTotal: returnedOrders + eligibleForReview + ineligibleForReview,
+        matches: totalOrders === (returnedOrders + eligibleForReview + ineligibleForReview)
+      });
+
+      // If there's a mismatch, log detailed breakdown for debugging
+      if (totalOrders !== (returnedOrders + eligibleForReview + ineligibleForReview)) {
+        await this.logDetailedOrderBreakdown(client);
+      }
 
       return {
         totalOrders,
@@ -508,6 +517,69 @@ export class DatabaseService {
         ineligibleForReview
       };
     }, 3, 'get dashboard stats');
+  }
+
+  // Helper method to log detailed order breakdown for debugging
+  private async logDetailedOrderBreakdown(client: any): Promise<void> {
+    try {
+      // Get counts for different order categories
+      const [
+        ordersWithNullDeliveryDate,
+        ordersWithNonShippedStatus,
+        ordersDeliveredLessThan25Days,
+        ordersWithReviewRequests,
+        ordersReturnedButNotCounted,
+        ordersEligibleButNotCounted
+      ] = await Promise.all([
+        client.amazonOrder.count({
+          where: {
+            deliveryDate: null
+          }
+        }),
+        client.amazonOrder.count({
+          where: {
+            orderStatus: { notIn: ['Shipped', 'PartiallyShipped'] }
+          }
+        }),
+        client.amazonOrder.count({
+          where: {
+            deliveryDate: { gt: addDays(new Date(), -25) }
+          }
+        }),
+        client.amazonOrder.count({
+          where: {
+            reviewRequestSent: true
+          }
+        }),
+        client.amazonOrder.count({
+          where: {
+            isReturned: true,
+            reviewRequestSent: true
+          }
+        }),
+        client.amazonOrder.count({
+          where: {
+            isReturned: false,
+            reviewRequestSent: false,
+            deliveryDate: { lte: addDays(new Date(), -25) },
+            orderStatus: { in: ['Shipped', 'PartiallyShipped'] }
+          }
+        })
+      ]);
+
+      logger.info('Detailed order breakdown for debugging', {
+        ordersWithNullDeliveryDate,
+        ordersWithNonShippedStatus,
+        ordersDeliveredLessThan25Days,
+        ordersWithReviewRequests,
+        ordersReturnedButNotCounted,
+        ordersEligibleButNotCounted
+      });
+    } catch (error) {
+      logger.error('Failed to get detailed order breakdown', {
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
   }
 
   // Activity Logs with proper pagination and filtering
