@@ -3,13 +3,31 @@ import type { RequestHandler } from './$types';
 import { InventoryLedgerService } from '$lib/db/services/inventory-ledger';
 import { logger } from '$lib/logger';
 
-export const GET: RequestHandler = async ({ params }) => {
+export const PUT: RequestHandler = async ({ params, request }) => {
   const startTime = Date.now();
   
   try {
+    const { status, notes } = await request.json();
+    
+    if (!status) {
+      return json({
+        success: false,
+        error: 'Status is required'
+      }, { status: 400 });
+    }
+
+    // Validate status
+    const validStatuses = ['WAITING', 'CLAIMABLE', 'CLAIM_INITIATED', 'CLAIMED', 'PAID', 'INVALID', 'RESOLVED'];
+    if (!validStatuses.includes(status)) {
+      return json({
+        success: false,
+        error: `Invalid status. Must be one of: ${validStatuses.join(', ')}`
+      }, { status: 400 });
+    }
+
     const service = new InventoryLedgerService();
     
-    // Get the event
+    // Check if event exists
     const event = await service.db.inventoryLedgerEvent.findUnique({
       where: { id: params.id }
     });
@@ -21,30 +39,24 @@ export const GET: RequestHandler = async ({ params }) => {
       }, { status: 404 });
     }
 
-    // Check if event is eligible for claim
-    if (!['CLAIMABLE', 'CLAIM_INITIATED'].includes(event.status)) {
-      return json({
-        success: false,
-        error: 'Event is not eligible for claim generation'
-      }, { status: 400 });
-    }
-
-    // Generate claim text
-    const claimText = service.generateClaimText(event);
+    // Update event status
+    const updatedEvent = await service.updateEventStatus(params.id, status, notes);
 
     const duration = Date.now() - startTime;
-    logger.info('API call: generateClaimText', {
+    logger.info('API call: updateEventStatus', {
       aws: {
-        operation: 'generateClaimText',
+        operation: 'updateEventStatus',
         success: true
       },
       event: {
         duration
       },
       eventId: params.id,
-      fnsku: event.fnsku,
-      asin: event.asin,
-      currentStatus: event.status
+      fnsku: updatedEvent.fnsku,
+      asin: updatedEvent.asin,
+      oldStatus: event.status,
+      newStatus: status,
+      notes
     });
 
     await service.disconnect();
@@ -52,27 +64,20 @@ export const GET: RequestHandler = async ({ params }) => {
     return json({
       success: true,
       data: {
-        claimText,
-        event: {
-          id: event.id,
-          fnsku: event.fnsku,
-          asin: event.asin,
-          sku: event.sku,
-          productTitle: event.productTitle,
-          eventType: event.eventType,
-          fulfillmentCenter: event.fulfillmentCenter,
-          unreconciledQuantity: event.unreconciledQuantity,
-          eventDate: event.eventDate,
-          status: event.status
+        event: updatedEvent,
+        statusChange: {
+          from: event.status,
+          to: status,
+          notes
         }
       }
     });
 
   } catch (error) {
     const duration = Date.now() - startTime;
-    logger.error('API call: generateClaimText failed', {
+    logger.error('API call: updateEventStatus', {
       aws: {
-        operation: 'generateClaimText',
+        operation: 'updateEventStatus',
         success: false
       },
       event: {

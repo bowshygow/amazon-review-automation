@@ -11,10 +11,16 @@
 
   // Reactive state
   let stats = $state(data.stats);
-  let claimableEvents = $state(data.claimableEvents);
+  let inventoryEvents = $state(data.inventoryEvents);
   let loading = $state(false);
   let error = $state<string | null>(null);
   let refreshing = $state(false);
+
+  // Extract events array and pagination info
+  let claimableEvents = $derived(inventoryEvents.events || []);
+  let totalEvents = $derived(inventoryEvents.total || 0);
+  let currentPage = $derived(inventoryEvents.page || 1);
+  let totalPages = $derived(inventoryEvents.totalPages || 0);
 
   // Table columns for claimable events
   const columns = [
@@ -54,29 +60,50 @@
       label: 'Status', 
       sortable: true, 
       width: '100px',
-      render: (value: string) => `<span class="inline-flex px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">${value}</span>`
+      render: (value: string) => {
+        const statusColors = {
+          'WAITING': 'bg-yellow-100 text-yellow-800',
+          'CLAIMABLE': 'bg-orange-100 text-orange-800',
+          'CLAIM_INITIATED': 'bg-blue-100 text-blue-800',
+          'CLAIMED': 'bg-green-100 text-green-800',
+          'PAID': 'bg-emerald-100 text-emerald-800',
+          'INVALID': 'bg-red-100 text-red-800',
+          'RESOLVED': 'bg-gray-100 text-gray-800'
+        };
+        const colorClass = statusColors[value] || 'bg-gray-100 text-gray-800';
+        return `<span class="inline-flex px-2 py-1 text-xs font-semibold rounded-full ${colorClass}">${value}</span>`;
+      }
     },
     { 
       key: 'actions', 
       label: 'Actions', 
       sortable: false, 
       width: '120px',
-      actions: (event: InventoryLedgerEvent) => [
-        {
-          label: 'Generate Claim',
-          icon: '📋',
-          variant: 'primary' as const,
-          onClick: () => generateClaimText(event.id),
-          disabled: refreshing
-        },
-        {
-          label: 'Mark Claimed',
-          icon: '✅',
-          variant: 'success' as const,
-          onClick: () => markAsClaimed(event.id),
-          disabled: refreshing
+      actions: (event: InventoryLedgerEvent) => {
+        const actions = [];
+        
+        // Only show claim text action for claimable events
+        if (['CLAIMABLE', 'CLAIM_INITIATED'].includes(event.status)) {
+          actions.push({
+            label: 'View Claim Text',
+            icon: '📋',
+            variant: 'primary' as const,
+            onClick: () => generateClaimText(event.id),
+            disabled: refreshing
+          });
         }
-      ]
+        
+        // Always show status update action
+        actions.push({
+          label: 'Update Status',
+          icon: '🔄',
+          variant: 'secondary' as const,
+          onClick: () => alert('Status update feature available in the full tab view'),
+          disabled: refreshing
+        });
+        
+        return actions;
+      }
     }
   ];
 
@@ -103,43 +130,38 @@
     currentPage * pageSize
   ));
 
-  async function refreshData() {
+  async function refreshData(page: number = 1) {
     try {
       refreshing = true;
       error = null;
 
-      // Load fresh data
-      const [statsResponse, claimableResponse] = await Promise.all([
+      // Load fresh data with pagination
+      const [statsResponse, inventoryResponse] = await Promise.all([
         fetch('/api/inventory-ledger/stats?cache=no-cache'),
-        fetch(`/api/inventory-ledger/claimable?limit=100&sortBy=${sortBy}&sortOrder=${sortOrder}&cache=no-cache`)
+        fetch(`/api/inventory-ledger?page=${page}&limit=50&cache=no-cache`)
       ]);
 
       if (!statsResponse.ok) {
         throw new Error(`Failed to load stats: ${statsResponse.statusText}`);
       }
 
-      if (!claimableResponse.ok) {
-        throw new Error(`Failed to load claimable events: ${claimableResponse.statusText}`);
+      if (!inventoryResponse.ok) {
+        throw new Error(`Failed to load inventory events: ${inventoryResponse.statusText}`);
       }
 
       const statsData = await statsResponse.json();
-      const claimableData = await claimableResponse.json();
+      const inventoryData = await inventoryResponse.json();
 
       if (!statsData.success) {
         throw new Error(statsData.error || 'Failed to load stats');
       }
 
-      if (!claimableData.success) {
-        throw new Error(claimableData.error || 'Failed to load claimable events');
+      if (!inventoryData.success) {
+        throw new Error(inventoryData.error || 'Failed to load inventory events');
       }
 
       stats = statsData.data;
-      claimableEvents = claimableData.data;
-      
-      // Reset to first page if current page is out of bounds
-      if (currentPage > totalPages) {
-        currentPage = 1;
-      }
+      inventoryEvents = inventoryData.data;
 
     } catch (err) {
       error = err instanceof Error ? err.message : 'Unknown error occurred';
@@ -156,12 +178,12 @@
   }
 
   function handlePageChange(event: CustomEvent<{ page: number }>) {
-    currentPage = event.detail.page;
+    refreshData(event.detail.page);
   }
 
   function handleLimitChange(event: CustomEvent<{ limit: number }>) {
     pageSize = event.detail.limit;
-    currentPage = 1; // Reset to first page
+    refreshData(1); // Reset to first page
   }
 
   async function generateClaimText(eventId: string) {
@@ -170,9 +192,31 @@
       const data = await response.json();
 
       if (data.success) {
-        // Copy to clipboard
-        await navigator.clipboard.writeText(data.data.claimText);
-        alert('Claim text copied to clipboard!');
+        // Show the claim text in a modal-like alert
+        const claimText = data.data.claimText;
+        const eventDetails = data.data.event;
+        
+        const modalContent = `
+Event Details:
+- FNSKU: ${eventDetails.fnsku}
+- ASIN: ${eventDetails.asin}
+- SKU: ${eventDetails.sku}
+- Event Type: ${eventDetails.eventType}
+- FC: ${eventDetails.fulfillmentCenter || 'N/A'}
+- Quantity Lost: ${Math.abs(eventDetails.unreconciledQuantity)}
+- Event Date: ${formatDate(eventDetails.eventDate)}
+- Status: ${eventDetails.status}
+
+Claim Text Template:
+${claimText}
+
+(Text copied to clipboard)
+        `;
+        
+        alert(modalContent);
+        
+        // Also copy to clipboard
+        await navigator.clipboard.writeText(claimText);
       } else {
         alert(`Failed to generate claim text: ${data.error}`);
       }
@@ -378,18 +422,23 @@
               <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
               </svg>
-              <h3 class="mt-2 text-sm font-medium text-gray-900">No claimable events</h3>
-              <p class="mt-1 text-sm text-gray-500">All events are either waiting or resolved.</p>
+              <h3 class="mt-2 text-sm font-medium text-gray-900">No inventory events</h3>
+              <p class="mt-1 text-sm text-gray-500">No inventory events found for the current filters.</p>
             </div>
           {:else}
             <DataTable
-              data={paginatedEvents}
+              data={claimableEvents}
               columns={columns}
-              pagination={pagination}
+              pagination={{
+                page: currentPage,
+                limit: 50,
+                total: totalEvents,
+                totalPages: totalPages
+              }}
               loading={refreshing}
-              on:sort={handleSort}
-              on:pageChange={handlePageChange}
-              on:limitChange={handleLimitChange}
+              onsort={handleSort}
+              onpagechange={handlePageChange}
+              onlimitchange={handleLimitChange}
             />
           {/if}
         </div>

@@ -960,6 +960,25 @@ export class InventoryLedgerService {
   }
 
   /**
+   * Update event status with optional notes
+   */
+  async updateEventStatus(eventId: string, status: string, notes?: string): Promise<InventoryLedgerEvent> {
+    const db = await this.getDb();
+    
+    // For now, we'll store notes in a simple way
+    // In the future, you might want to create a separate notes/audit table
+    const updateData: any = { status };
+    
+    // If you want to store notes, you could add a notes field to the schema
+    // For now, we'll just update the status
+    
+    return db.inventoryLedgerEvent.update({
+      where: { id: eventId },
+      data: updateData
+    });
+  }
+
+  /**
    * Clean up old resolved events (optional maintenance)
    */
   async cleanupOldResolvedEvents(daysOld: number = 90): Promise<number> {

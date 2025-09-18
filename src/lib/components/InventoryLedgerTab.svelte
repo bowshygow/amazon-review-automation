@@ -22,6 +22,10 @@
   let inventoryRefreshing = $state(false);
   let inventoryError = $state<string | null>(null);
 
+  // Internal state for dynamic loading
+  let inventoryEvents = $state({ events: claimableEvents, total: 0, page: 1, limit: 50, totalPages: 0 });
+  let currentEvents = $derived(inventoryEvents.events);
+
   // Table columns for claimable events
   const columns = [
     { 
@@ -60,29 +64,50 @@
       label: 'Status', 
       sortable: true, 
       width: '100px',
-      render: (value: string) => `<span class="inline-flex px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">${value}</span>`
+      render: (value: string) => {
+        const statusColors = {
+          'WAITING': 'bg-yellow-100 text-yellow-800',
+          'CLAIMABLE': 'bg-orange-100 text-orange-800',
+          'CLAIM_INITIATED': 'bg-blue-100 text-blue-800',
+          'CLAIMED': 'bg-green-100 text-green-800',
+          'PAID': 'bg-emerald-100 text-emerald-800',
+          'INVALID': 'bg-red-100 text-red-800',
+          'RESOLVED': 'bg-gray-100 text-gray-800'
+        };
+        const colorClass = statusColors[value] || 'bg-gray-100 text-gray-800';
+        return `<span class="inline-flex px-2 py-1 text-xs font-semibold rounded-full ${colorClass}">${value}</span>`;
+      }
     },
     { 
       key: 'actions', 
       label: 'Actions', 
       sortable: false, 
       width: '120px',
-      actions: (event: InventoryLedgerEvent) => [
-        {
-          label: 'Generate Claim',
-          icon: '📋',
-          variant: 'primary' as const,
-          onClick: () => generateClaimText(event.id),
-          disabled: refreshing
-        },
-        {
-          label: 'Mark Claimed',
-          icon: '✅',
-          variant: 'success' as const,
-          onClick: () => markAsClaimed(event.id),
-          disabled: refreshing
+      actions: (event: InventoryLedgerEvent) => {
+        const actions = [];
+        
+        // Only show claim text action for claimable events
+        if (['CLAIMABLE', 'CLAIM_INITIATED'].includes(event.status)) {
+          actions.push({
+            label: 'View Claim Text',
+            icon: '📋',
+            variant: 'primary' as const,
+            onClick: () => viewClaimText(event.id),
+            disabled: refreshing
+          });
         }
-      ]
+        
+        // Always show status update action
+        actions.push({
+          label: 'Update Status',
+          icon: '🔄',
+          variant: 'secondary' as const,
+          onClick: () => updateEventStatus(event.id),
+          disabled: refreshing
+        });
+        
+        return actions;
+      }
     }
   ];
 
@@ -95,9 +120,9 @@
   let sortBy = 'eventDate';
   let sortOrder: 'asc' | 'desc' = 'desc';
 
-  // Filter state
+  // Filter state - show all statuses by default
   let filters = $state({
-    status: [] as string[],
+    status: [] as string[], // Empty means show all statuses
     eventType: [] as string[],
     fulfillmentCenter: [] as string[],
     dateFrom: null as Date | null,
@@ -112,6 +137,19 @@
     startDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // 30 days ago
     endDate: new Date() // today
   });
+
+  // Claim text modal state
+  let showClaimTextModal = $state(false);
+  let currentClaimText = $state('');
+  let currentClaimEvent = $state(null);
+  let claimTextLoading = $state(false);
+
+  // Status update modal state
+  let showStatusModal = $state(false);
+  let currentEventForStatus = $state(null);
+  let statusUpdateLoading = $state(false);
+  let newStatus = $state('');
+  let statusNotes = $state('');
 
   // Computed pagination info
   const pagination = $derived({
@@ -130,8 +168,80 @@
   // Event handlers
   const dispatch = createEventDispatcher();
 
+  // Load all events when component mounts
+  onMount(() => {
+    loadInventoryEvents(1, filters);
+  });
+
   function handleRefresh() {
     dispatch('refresh');
+  }
+
+  async function loadInventoryEvents(page: number = 1, filters: any = {}) {
+    try {
+      refreshing = true;
+      error = null;
+
+      // Build query parameters
+      const params = new URLSearchParams({
+        page: page.toString(),
+        limit: '50'
+      });
+
+      // Add status filter if specified
+      if (filters.status && filters.status.length > 0) {
+        params.append('status', filters.status.join(','));
+      }
+
+      // Add other filters
+      if (filters.eventType && filters.eventType.length > 0) {
+        params.append('eventType', filters.eventType.join(','));
+      }
+
+      if (filters.fulfillmentCenter && filters.fulfillmentCenter.length > 0) {
+        params.append('fulfillmentCenter', filters.fulfillmentCenter.join(','));
+      }
+
+      if (filters.fnsku) {
+        params.append('fnsku', filters.fnsku);
+      }
+
+      if (filters.asin) {
+        params.append('asin', filters.asin);
+      }
+
+      if (filters.sku) {
+        params.append('sku', filters.sku);
+      }
+
+      if (filters.dateFrom) {
+        params.append('dateFrom', filters.dateFrom.toISOString());
+      }
+
+      if (filters.dateTo) {
+        params.append('dateTo', filters.dateTo.toISOString());
+      }
+
+      const response = await fetch(`/api/inventory-ledger?${params.toString()}&cache=no-cache`);
+      
+      if (!response.ok) {
+        throw new Error(`Failed to load inventory events: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to load inventory events');
+      }
+
+      inventoryEvents = data.data;
+
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Unknown error occurred';
+      console.error('Failed to load inventory events:', err);
+    } finally {
+      refreshing = false;
+    }
   }
 
   async function handleSyncInventoryLedger() {
@@ -177,6 +287,7 @@
 
   function handlePageChange(event: CustomEvent<{ page: number }>) {
     currentPage = event.detail.page;
+    loadInventoryEvents(event.detail.page, filters);
   }
 
   function handleLimitChange(event: CustomEvent<{ limit: number }>) {
@@ -195,46 +306,95 @@
     filters.asin = newFilters.asin || '';
     filters.sku = newFilters.sku || '';
     currentPage = 1; // Reset to first page
+    
+    // Load data with new filters
+    loadInventoryEvents(1, filters);
+    
     dispatch('filterChange', event.detail);
   }
 
-  async function generateClaimText(eventId: string) {
+  async function viewClaimText(eventId: string) {
     try {
+      claimTextLoading = true;
       const response = await fetch(`/api/inventory-ledger/claim-text/${eventId}`);
       const data = await response.json();
 
       if (data.success) {
-        // Copy to clipboard
-        await navigator.clipboard.writeText(data.data.claimText);
-        alert('Claim text copied to clipboard!');
+        currentClaimText = data.data.claimText;
+        currentClaimEvent = data.data.event;
+        showClaimTextModal = true;
       } else {
         alert(`Failed to generate claim text: ${data.error}`);
       }
     } catch (err) {
       alert(`Error generating claim text: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      claimTextLoading = false;
     }
   }
 
-  async function markAsClaimed(eventId: string) {
-    if (!confirm('Are you sure you want to mark this event as claimed?')) {
-      return;
-    }
+  async function updateEventStatus(eventId: string) {
+    // Find the event to get current status
+    const event = claimableEvents.find(e => e.id === eventId);
+    if (!event) return;
+
+    currentEventForStatus = event;
+    newStatus = event.status;
+    statusNotes = '';
+    showStatusModal = true;
+  }
+
+  async function submitStatusUpdate() {
+    if (!currentEventForStatus || !newStatus) return;
 
     try {
-      const response = await fetch(`/api/inventory-ledger/${eventId}/claim`, {
-        method: 'POST'
+      statusUpdateLoading = true;
+      const response = await fetch(`/api/inventory-ledger/${currentEventForStatus.id}/status`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          status: newStatus,
+          notes: statusNotes
+        })
       });
+
       const data = await response.json();
 
       if (data.success) {
-        alert('Event marked as claimed successfully!');
+        showStatusModal = false;
         handleRefresh(); // Refresh data
       } else {
-        alert(`Failed to mark as claimed: ${data.error}`);
+        alert(`Failed to update status: ${data.error}`);
       }
     } catch (err) {
-      alert(`Error marking as claimed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      alert(`Error updating status: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      statusUpdateLoading = false;
     }
+  }
+
+  async function copyClaimText() {
+    try {
+      await navigator.clipboard.writeText(currentClaimText);
+      alert('Claim text copied to clipboard!');
+    } catch (err) {
+      alert('Failed to copy text to clipboard');
+    }
+  }
+
+  function closeClaimTextModal() {
+    showClaimTextModal = false;
+    currentClaimText = '';
+    currentClaimEvent = null;
+  }
+
+  function closeStatusModal() {
+    showStatusModal = false;
+    currentEventForStatus = null;
+    newStatus = '';
+    statusNotes = '';
   }
 
   function formatDate(date: string | Date): string {
@@ -427,7 +587,7 @@
   <InventoryLedgerFilterBar 
     filters={filters} 
     loading={loading}
-    on:filterChange={handleFilterChange}
+    onfilterchange={handleFilterChange}
   />
 
   <!-- Claimable Events Table -->
@@ -436,11 +596,15 @@
       <div class="flex items-center justify-between mb-4">
         <div>
           <h3 class="text-lg leading-6 font-medium text-gray-900">
-            Claimable Events ({claimableEvents.length})
+            All Inventory Events ({inventoryEvents.total || 0})
           </h3>
           <p class="text-sm text-gray-500 mt-1">
-            Events that are 7+ days old and still have unreconciled quantities. These are ready for claims.
+            Complete inventory ledger with all events. Use filters to narrow down by status, event type, or fulfillment center.
           </p>
+          <div class="mt-2 flex items-center space-x-4 text-sm text-gray-500">
+            <span>Showing: {currentEvents.length} of {inventoryEvents.total || 0} events</span>
+            <span>Page: {inventoryEvents.page || 1} of {inventoryEvents.totalPages || 1}</span>
+          </div>
         </div>
         <button
           onclick={handleRefresh}
@@ -462,26 +626,186 @@
         </button>
       </div>
 
-      {#if claimableEvents.length === 0}
+      {#if currentEvents.length === 0}
         <div class="text-center py-12">
           <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
           </svg>
-          <h3 class="mt-2 text-sm font-medium text-gray-900">No claimable events</h3>
-          <p class="mt-1 text-sm text-gray-500">All events are either waiting or resolved.</p>
+          <h3 class="mt-2 text-sm font-medium text-gray-900">No inventory events found</h3>
+          <p class="mt-1 text-sm text-gray-500">No events match your current filters. Try adjusting the filters or sync new data.</p>
         </div>
       {:else}
         <DataTable
-          data={paginatedEvents}
+          data={currentEvents}
           columns={columns}
-          pagination={pagination}
+          pagination={{
+            page: inventoryEvents.page,
+            limit: inventoryEvents.limit,
+            total: inventoryEvents.total,
+            totalPages: inventoryEvents.totalPages
+          }}
           loading={refreshing}
-          on:sort={handleSort}
-          on:pageChange={handlePageChange}
-          on:limitChange={handleLimitChange}
+          onsort={handleSort}
+          onpagechange={handlePageChange}
+          onlimitchange={handleLimitChange}
         />
       {/if}
     </div>
   </div>
+
+  <!-- Claim Text Modal -->
+  {#if showClaimTextModal}
+    <div class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
+      <div class="relative top-20 mx-auto p-5 border w-11/12 max-w-4xl shadow-lg rounded-md bg-white">
+        <div class="mt-3">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-medium text-gray-900">Generated Claim Text</h3>
+            <button 
+              onclick={closeClaimTextModal}
+              class="text-gray-400 hover:text-gray-600"
+            >
+              <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+              </svg>
+            </button>
+          </div>
+
+          {#if currentClaimEvent}
+            <div class="mb-4 p-4 bg-gray-50 rounded-lg">
+              <h4 class="font-semibold text-gray-700 mb-2">Event Details:</h4>
+              <div class="grid grid-cols-2 gap-2 text-sm">
+                <div><strong>FNSKU:</strong> {currentClaimEvent.fnsku}</div>
+                <div><strong>ASIN:</strong> {currentClaimEvent.asin}</div>
+                <div><strong>SKU:</strong> {currentClaimEvent.sku}</div>
+                <div><strong>Event Type:</strong> {currentClaimEvent.eventType}</div>
+                <div><strong>FC:</strong> {currentClaimEvent.fulfillmentCenter || 'N/A'}</div>
+                <div><strong>Quantity Lost:</strong> {Math.abs(currentClaimEvent.unreconciledQuantity)}</div>
+                <div><strong>Event Date:</strong> {formatDate(currentClaimEvent.eventDate)}</div>
+                <div><strong>Status:</strong> <span class="px-2 py-1 text-xs rounded-full bg-yellow-100 text-yellow-800">{currentClaimEvent.status}</span></div>
+              </div>
+            </div>
+          {/if}
+
+          <div class="mb-4">
+            <label class="block text-sm font-medium text-gray-700 mb-2">Claim Text Template:</label>
+            <div class="relative">
+              <textarea 
+                class="w-full h-40 p-3 border border-gray-300 rounded-md font-mono text-sm"
+                readonly
+                value={currentClaimText}
+              ></textarea>
+            </div>
+          </div>
+
+          <div class="flex justify-end space-x-3">
+            <button
+              onclick={closeClaimTextModal}
+              class="px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400"
+            >
+              Close
+            </button>
+            <button
+              onclick={copyClaimText}
+              class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+            >
+              Copy to Clipboard
+            </button>
+            <button
+              onclick={() => {
+                // Mark as CLAIM_INITIATED when user submits claim
+                if (currentClaimEvent) {
+                  newStatus = 'CLAIM_INITIATED';
+                  statusNotes = 'Claim text generated and submitted to Amazon';
+                  currentEventForStatus = currentClaimEvent;
+                  closeClaimTextModal();
+                  showStatusModal = true;
+                }
+              }}
+              class="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
+            >
+              Mark as Claim Submitted
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Status Update Modal -->
+  {#if showStatusModal}
+    <div class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
+      <div class="relative top-20 mx-auto p-5 border w-11/12 max-w-2xl shadow-lg rounded-md bg-white">
+        <div class="mt-3">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-medium text-gray-900">Update Event Status</h3>
+            <button 
+              onclick={closeStatusModal}
+              class="text-gray-400 hover:text-gray-600"
+            >
+              <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+              </svg>
+            </button>
+          </div>
+
+          {#if currentEventForStatus}
+            <div class="mb-4 p-4 bg-gray-50 rounded-lg">
+              <h4 class="font-semibold text-gray-700 mb-2">Event Details:</h4>
+              <div class="grid grid-cols-2 gap-2 text-sm">
+                <div><strong>FNSKU:</strong> {currentEventForStatus.fnsku}</div>
+                <div><strong>ASIN:</strong> {currentEventForStatus.asin}</div>
+                <div><strong>Current Status:</strong> <span class="px-2 py-1 text-xs rounded-full bg-yellow-100 text-yellow-800">{currentEventForStatus.status}</span></div>
+              </div>
+            </div>
+          {/if}
+
+          <div class="mb-4">
+            <label for="status-select" class="block text-sm font-medium text-gray-700 mb-2">New Status:</label>
+            <select 
+              id="status-select"
+              bind:value={newStatus}
+              class="w-full p-3 border border-gray-300 rounded-md"
+            >
+              <option value="WAITING">WAITING</option>
+              <option value="CLAIMABLE">CLAIMABLE</option>
+              <option value="CLAIM_INITIATED">CLAIM_INITIATED</option>
+              <option value="CLAIMED">CLAIMED</option>
+              <option value="PAID">PAID</option>
+              <option value="INVALID">INVALID</option>
+              <option value="RESOLVED">RESOLVED</option>
+            </select>
+          </div>
+
+          <div class="mb-4">
+            <label for="status-notes" class="block text-sm font-medium text-gray-700 mb-2">Notes (Optional):</label>
+            <textarea 
+              id="status-notes"
+              bind:value={statusNotes}
+              placeholder="Add any notes about this status change..."
+              class="w-full h-24 p-3 border border-gray-300 rounded-md"
+            ></textarea>
+          </div>
+
+          <div class="flex justify-end space-x-3">
+            <button
+              onclick={closeStatusModal}
+              class="px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400"
+              disabled={statusUpdateLoading}
+            >
+              Cancel
+            </button>
+            <button
+              onclick={submitStatusUpdate}
+              class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
+              disabled={statusUpdateLoading}
+            >
+              {statusUpdateLoading ? 'Updating...' : 'Update Status'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>
 </div>
+

@@ -22,9 +22,9 @@ export const load: PageServerLoad = async ({ url, fetch }) => {
     });
 
     // Use SvelteKit's special fetch for server-side requests
-    const [statsResponse, claimableResponse] = await Promise.all([
+    const [statsResponse, inventoryResponse] = await Promise.all([
       fetch('/api/inventory-ledger/stats?cache=cache'),
-      fetch('/api/inventory-ledger/claimable?limit=100&cache=cache')
+      fetch('/api/inventory-ledger?page=1&limit=50&cache=cache')
     ]);
 
     if (!statsResponse.ok) {
@@ -54,35 +54,35 @@ export const load: PageServerLoad = async ({ url, fetch }) => {
       });
     }
 
-    if (!claimableResponse.ok) {
-      const errorData = await claimableResponse.json().catch(() => ({}));
-      logger.error('Failed to load claimable events', {
+    if (!inventoryResponse.ok) {
+      const errorData = await inventoryResponse.json().catch(() => ({}));
+      logger.error('Failed to load inventory events', {
         aws: {
           operation: 'loadInventoryLedgerPage',
           success: false
         },
         error: {
-          status: claimableResponse.status,
-          statusText: claimableResponse.statusText,
+          status: inventoryResponse.status,
+          statusText: inventoryResponse.statusText,
           ...errorData
         }
       });
       
-      if (claimableResponse.status >= 500) {
+      if (inventoryResponse.status >= 500) {
         throw error(503, {
           message: 'Service temporarily unavailable',
-          details: 'Unable to load claimable events'
+          details: 'Unable to load inventory events'
         });
       }
       
-      throw error(claimableResponse.status, {
-        message: 'Failed to load claimable events',
-        details: errorData.message || claimableResponse.statusText
+      throw error(inventoryResponse.status, {
+        message: 'Failed to load inventory events',
+        details: errorData.message || inventoryResponse.statusText
       });
     }
 
     const statsData = await statsResponse.json();
-    const claimableData = await claimableResponse.json();
+    const inventoryData = await inventoryResponse.json();
 
     if (!statsData.success) {
       throw error(500, {
@@ -91,10 +91,10 @@ export const load: PageServerLoad = async ({ url, fetch }) => {
       });
     }
 
-    if (!claimableData.success) {
+    if (!inventoryData.success) {
       throw error(500, {
-        message: 'Invalid response from claimable events API',
-        details: claimableData.error || 'Unknown error'
+        message: 'Invalid response from inventory events API',
+        details: inventoryData.error || 'Unknown error'
       });
     }
 
@@ -111,19 +111,20 @@ export const load: PageServerLoad = async ({ url, fetch }) => {
       },
       response: {
         statsLoaded: !!statsData.data,
-        claimableEventsCount: claimableData.data?.length || 0,
+        inventoryEventsCount: inventoryData.data?.events?.length || 0,
+        totalInventoryEvents: inventoryData.data?.total || 0,
         totalClaimableUnits: statsData.data?.totalClaimableUnits || 0
       }
     });
 
     return {
       stats: statsData.data,
-      claimableEvents: claimableData.data || [],
+      inventoryEvents: inventoryData.data || { events: [], total: 0, page: 1, limit: 50, totalPages: 0 },
       meta: {
         timestamp: new Date().toISOString(),
         duration,
         statsMeta: statsData.meta,
-        claimableMeta: claimableData.meta
+        inventoryMeta: inventoryData.meta
       }
     };
 

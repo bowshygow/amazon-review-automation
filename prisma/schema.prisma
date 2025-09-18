@@ -90,9 +90,11 @@ model ActivityLog {
 enum InventoryLedgerStatus {
   WAITING
   CLAIMABLE
-  RESOLVED
+  CLAIM_INITIATED
   CLAIMED
   PAID
+  INVALID
+  RESOLVED
 }
 
 
