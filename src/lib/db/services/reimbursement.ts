@@ -306,9 +306,9 @@ export class ReimbursementService {
 					.where(eq(schema.reimbursedItems.reimbursementId, reimbursementId))
 					.limit(1);
 
-				// Parse date - handle ISO format from Amazon
+				// Parse date - handle ISO format from Amazon - ensure it's a string
 				const approvalDateStr = record['approval-date'] || record.approvalDate || new Date().toISOString();
-				const approvalDate = new Date(approvalDateStr);
+				const approvalDate = typeof approvalDateStr === 'string' ? approvalDateStr : new Date(approvalDateStr).toISOString();
 
 				// Parse quantities with proper fallbacks
 				const quantityReimbursedCash = parseInt(
@@ -331,7 +331,7 @@ export class ReimbursementService {
 					quantityReimbursedTotal,
 					amountPerUnit: amountPerUnit.toFixed(2),
 					amountTotal: amountTotal.toFixed(2),
-					updatedAt: new Date()
+					updatedAt: new Date().toISOString()
 				};
 
 				if (existing.length > 0) {
@@ -674,10 +674,10 @@ export class ReimbursementService {
 
 		for (const event of ledgerData) {
 			try {
-				const fnsku = event.fnsku || event.FNSKU || '';
-				const asin = event.asin || event.ASIN || '';
-				const sku = event.sku || event.SKU || '';
-				const eventType = event.eventType || event['event-type'] || '';
+				const fnsku = event.fnsku || '';
+				const asin = event.asin || '';
+				const sku = event.sku || '';
+				const eventType = event.eventType || '';
 
 				if (!fnsku || !asin || !sku || !eventType) {
 					skippedCount++;
@@ -693,47 +693,67 @@ export class ReimbursementService {
 				}
 
 				// Check if event already exists (deduplication)
-				const eventDate = event.eventDate || event['event-date'] || new Date().toISOString();
-				const referenceId = event.referenceId || event['reference-id'] || null;
-				const fulfillmentCenter = event.fulfillmentCenter || event['fulfillment-center'] || null;
+				// Ensure eventDate is a proper ISO string
+				const eventDateRaw = event.eventDate || new Date().toISOString();
+				const eventDate = typeof eventDateRaw === 'string' ? eventDateRaw : new Date(eventDateRaw).toISOString();
+				const referenceId = event.referenceId || null;
+				const fulfillmentCenter = event.fulfillmentCenter || null;
+
+				// Build where conditions dynamically to avoid type errors
+				const whereConditions = [
+					eq(schema.inventoryLedgerEvents.fnsku, fnsku),
+					eq(schema.inventoryLedgerEvents.asin, asin),
+					eq(schema.inventoryLedgerEvents.eventDate, eventDate),
+					eq(schema.inventoryLedgerEvents.eventType, eventType)
+				];
+
+				if (referenceId) {
+					whereConditions.push(eq(schema.inventoryLedgerEvents.referenceId, referenceId));
+				} else {
+					whereConditions.push(isNull(schema.inventoryLedgerEvents.referenceId));
+				}
+
+				if (fulfillmentCenter) {
+					whereConditions.push(eq(schema.inventoryLedgerEvents.fulfillmentCenter, fulfillmentCenter));
+				} else {
+					whereConditions.push(isNull(schema.inventoryLedgerEvents.fulfillmentCenter));
+				}
 
 				const existing = await db
 					.select()
 					.from(schema.inventoryLedgerEvents)
-					.where(
-						and(
-							eq(schema.inventoryLedgerEvents.fnsku, fnsku),
-							eq(schema.inventoryLedgerEvents.asin, asin),
-							eq(schema.inventoryLedgerEvents.eventDate, eventDate),
-							eq(schema.inventoryLedgerEvents.eventType, eventType),
-							referenceId
-								? eq(schema.inventoryLedgerEvents.referenceId, referenceId)
-								: isNull(schema.inventoryLedgerEvents.referenceId),
-							fulfillmentCenter
-								? eq(schema.inventoryLedgerEvents.fulfillmentCenter, fulfillmentCenter)
-								: isNull(schema.inventoryLedgerEvents.fulfillmentCenter)
-						)
-					)
+					.where(and(...whereConditions))
 					.limit(1);
 
 				if (existing.length === 0) {
-					// Insert new ledger event
-					await db.insert(schema.inventoryLedgerEvents).values({
+					// Get raw timestamp - ensure it's a string
+					const rawTimestampRaw = event.rawTimestamp || eventDateRaw;
+					const rawTimestamp = typeof rawTimestampRaw === 'string' ? rawTimestampRaw : new Date(rawTimestampRaw).toISOString();
+
+					// Build insert values - only include optional fields if they have values
+					const insertValues: any = {
 						eventDate,
 						fnsku,
 						asin,
 						sku,
-						productTitle: event.productTitle || event['product-title'] || '',
+						productTitle: event.productTitle || '',
 						eventType,
-						referenceId,
-						quantity: parseInt(event.quantity || '0', 10) || 0,
-						fulfillmentCenter,
-						disposition: event.disposition || null,
-						reason: event.reason || null,
-						country: event.country || null,
-						unreconciledQuantity: parseInt(event.unreconciledQuantity || event['unreconciled-quantity'] || '0', 10) || 0,
-						status: 'WAITING' // Default status for new events
-					});
+						quantity: parseInt(String(event.quantity || 0), 10),
+						country: event.country || 'US',
+						rawTimestamp,
+						unreconciledQuantity: parseInt(String(event.unreconciledQuantity || 0), 10),
+						status: 'WAITING',
+						updatedAt: new Date().toISOString()
+					};
+
+					// Add optional fields only if they have values
+					if (referenceId) insertValues.referenceId = referenceId;
+					if (fulfillmentCenter) insertValues.fulfillmentCenter = fulfillmentCenter;
+					if (event.disposition) insertValues.disposition = event.disposition;
+					if (event.reason) insertValues.reason = event.reason;
+
+					// Insert new ledger event
+					await db.insert(schema.inventoryLedgerEvents).values(insertValues);
 					processedCount++;
 				}
 			} catch (error) {
@@ -1494,5 +1514,61 @@ export class ReimbursementService {
 		if (value >= 500) return 'HIGH';
 		if (value >= 100) return 'MEDIUM';
 		return 'LOW';
+	}
+
+	/**
+	 * Get all unique categories from claimable items with their counts
+	 */
+	async getCategories() {
+		try {
+			// Get categories from claimable items
+			const claimableCategories = await db
+				.select({
+					category: schema.claimableItems.category,
+					count: count()
+				})
+				.from(schema.claimableItems)
+				.groupBy(schema.claimableItems.category);
+
+			// Get reimbursed items count
+			const reimbursedCount = await db
+				.select({
+					count: count()
+				})
+				.from(schema.reimbursedItems);
+
+			// Build categories array
+			const categories = [
+				{
+					category: 'RECOVERED',
+					count: Number(reimbursedCount[0]?.count || 0),
+					label: 'Recovered'
+				},
+				...claimableCategories.map((cat) => ({
+					category: cat.category,
+					count: Number(cat.count || 0),
+					label: this.getCategoryLabel(cat.category)
+				}))
+			];
+
+			return categories;
+		} catch (error) {
+			logger.error('Failed to get categories', { error });
+			throw error;
+		}
+	}
+
+	/**
+	 * Get human-readable label for category
+	 */
+	private getCategoryLabel(category: string): string {
+		const labels: Record<string, string> = {
+			LOST_WAREHOUSE: 'Lost in Warehouse',
+			DAMAGED_WAREHOUSE: 'Damaged in Warehouse',
+			CUSTOMER_RETURN_NOT_RECEIVED: 'Customer Return Not Received',
+			CUSTOMER_RETURN_DAMAGED: 'Customer Return Damaged',
+			RECOVERED: 'Recovered'
+		};
+		return labels[category] || category;
 	}
 }

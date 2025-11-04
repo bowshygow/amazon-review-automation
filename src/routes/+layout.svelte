@@ -14,9 +14,9 @@
 	<link rel="icon" href={favicon} />
 </svelte:head>
 
-<Sidebar.Provider>
+<Sidebar.Provider class="overflow-x-hidden">
 	<AppSidebar />
-	<Sidebar.Inset>
+	<Sidebar.Inset class="min-w-0">
 		<header class="flex h-16 shrink-0 items-center gap-2 border-b px-4">
 			<Sidebar.Trigger class="-ml-1" />
 			<Separator orientation="vertical" class="mr-2 h-4" />
@@ -24,7 +24,7 @@
 				<h1 class="text-lg font-semibold">Amazon Review Automation</h1>
 			</div>
 		</header>
-		<main class="flex flex-1 flex-col gap-4 p-4">
+		<main class="flex flex-1 flex-col gap-4 p-4 min-w-0 overflow-x-hidden">
 			{@render children?.()}
 		</main>
 	</Sidebar.Inset>

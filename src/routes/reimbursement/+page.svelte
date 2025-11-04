@@ -127,7 +127,7 @@
 		});
 	}
 
-	function getCategoryBadge(category: string) {
+	function getCategoryBadge(category: string): { variant: 'destructive' | 'secondary' | 'outline' | 'default', class: string } {
 		switch (category) {
 			case 'LOST_WAREHOUSE':
 				return { variant: 'destructive', class: 'bg-red-100 text-red-800' };
@@ -144,7 +144,7 @@
 		}
 	}
 
-	function getStatusBadge(status: string) {
+	function getStatusBadge(status: string): { variant: 'destructive' | 'secondary' | 'outline' | 'default', icon: any, class?: string } {
 		switch (status) {
 			case 'CLAIMABLE':
 				return { variant: 'default', icon: CheckCircle };
@@ -223,16 +223,16 @@
 	<title>Reimbursements - Amazon Review Automation</title>
 </svelte:head>
 
-<div class="space-y-6">
+<div class="space-y-6 w-full max-w-full overflow-x-hidden">
 	<!-- Header -->
-	<div class="flex items-center justify-between">
+	<div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
 		<div>
 			<h1 class="text-3xl font-bold tracking-tight">Reimbursements</h1>
 			<p class="text-muted-foreground">
 				Track and manage Amazon FBA reimbursement claims
 			</p>
 		</div>
-		<div class="flex items-center gap-2">
+		<div class="flex items-center gap-2 flex-shrink-0">
 			<Button onclick={loadReimbursementData} disabled={loading} variant="outline" class="gap-2">
 				<RefreshCw class="h-4 w-4 {loading ? 'animate-spin' : ''}" />
 				Refresh
@@ -393,7 +393,7 @@
 					<Card.Title>Filters</Card.Title>
 				</Card.Header>
 				<Card.Content>
-				<div class="grid gap-4 md:grid-cols-4">
+				<div class="grid gap-4 grid-cols-1 sm:grid-cols-2 md:grid-cols-4">
 					<div class="space-y-2">
 						<label for="search-input" class="text-sm font-medium">Search</label>
 						<div class="relative">
@@ -444,80 +444,82 @@
 			</Card.Root>
 
 			<!-- Items Table -->
-			<Card.Root>
+			<Card.Root class="w-full overflow-hidden">
 				<Card.Header>
 					<Card.Title>Reimbursement Items</Card.Title>
 					<Card.Description>
 						Showing {filteredItems.length} items • Total value: {formatCurrency(totalValue)}
 					</Card.Description>
 				</Card.Header>
-				<Card.Content>
+				<Card.Content class="p-0 overflow-x-auto max-w-full">
 					{#if loading}
-						<div class="space-y-2">
+						<div class="space-y-2 p-6">
 							{#each Array(10) as _}
 								<Skeleton class="h-12 w-full" />
 							{/each}
 						</div>
 					{:else if filteredItems.length > 0}
-						<Table.Root>
-							<Table.Header>
-								<Table.Row>
-									<Table.Head>Product</Table.Head>
-									<Table.Head>Category</Table.Head>
-									<Table.Head>Status</Table.Head>
-									<Table.Head>Amount</Table.Head>
-									<Table.Head>Date</Table.Head>
-									<Table.Head>Actions</Table.Head>
-								</Table.Row>
-							</Table.Header>
-							<Table.Body>
-								{#each filteredItems as item}
+						<div class="px-6 pb-6">
+							<Table.Root class="w-full min-w-[1000px]">
+								<Table.Header>
 									<Table.Row>
-										<Table.Cell>
-											<div class="space-y-1">
-												<div class="font-medium text-sm">
-													{item.productName || item.productTitle || 'Unknown Product'}
-												</div>
-												<div class="text-xs text-muted-foreground">
-													FNSKU: {item.fnsku} • ASIN: {item.asin}
-												</div>
-											</div>
-										</Table.Cell>
-										<Table.Cell>
-											{@const badgeInfo = getCategoryBadge(item.category)}
-											<Badge variant={badgeInfo.variant} class={badgeInfo.class}>
-												{categoryLabels[item.category] || item.category}
-											</Badge>
-										</Table.Cell>
-										<Table.Cell>
-											{@const statusInfo = getStatusBadge(item.status)}
-											<Badge variant={statusInfo.variant} class="gap-1 {statusInfo.class || ''}">
-												<svelte:component this={statusInfo.icon} class="h-3 w-3" />
-												{item.status}
-											</Badge>
-										</Table.Cell>
-										<Table.Cell class="font-medium">
-											{formatCurrency(item.reimbursementAmount || 0)}
-										</Table.Cell>
-										<Table.Cell class="text-sm text-muted-foreground">
-											{item.eventDate ? format(new Date(item.eventDate), 'MMM dd, yyyy') : 'N/A'}
-										</Table.Cell>
-										<Table.Cell>
-											{#if item.status === 'CLAIMABLE'}
-												<Button size="sm" class="gap-1">
-													<FileText class="h-3 w-3" />
-													Claim
-												</Button>
-											{:else}
-												<Button size="sm" variant="outline" disabled>
-													View
-												</Button>
-											{/if}
-										</Table.Cell>
+										<Table.Head>Product</Table.Head>
+										<Table.Head>Category</Table.Head>
+										<Table.Head>Status</Table.Head>
+										<Table.Head>Amount</Table.Head>
+										<Table.Head>Date</Table.Head>
+										<Table.Head>Actions</Table.Head>
 									</Table.Row>
-								{/each}
-							</Table.Body>
-						</Table.Root>
+								</Table.Header>
+								<Table.Body>
+									{#each filteredItems as item}
+										<Table.Row>
+											<Table.Cell>
+												<div class="space-y-1">
+													<div class="font-medium text-sm">
+														{item.productName || item.productTitle || 'Unknown Product'}
+													</div>
+													<div class="text-xs text-muted-foreground">
+														FNSKU: {item.fnsku} • ASIN: {item.asin}
+													</div>
+												</div>
+											</Table.Cell>
+											<Table.Cell>
+												{@const badgeInfo = getCategoryBadge(item.category)}
+												<Badge variant={badgeInfo.variant} class={badgeInfo.class}>
+													{categoryLabels[item.category] || item.category}
+												</Badge>
+											</Table.Cell>
+											<Table.Cell>
+												{@const statusInfo = getStatusBadge(item.status)}
+												<Badge variant={statusInfo.variant} class="gap-1 {statusInfo.class || ''}">
+													<svelte:component this={statusInfo.icon} class="h-3 w-3" />
+													{item.status}
+												</Badge>
+											</Table.Cell>
+											<Table.Cell class="font-medium">
+												{formatCurrency(item.reimbursementAmount || 0)}
+											</Table.Cell>
+											<Table.Cell class="text-sm text-muted-foreground">
+												{item.eventDate ? format(new Date(item.eventDate), 'MMM dd, yyyy') : 'N/A'}
+											</Table.Cell>
+											<Table.Cell>
+												{#if item.status === 'CLAIMABLE'}
+													<Button size="sm" class="gap-1">
+														<FileText class="h-3 w-3" />
+														Claim
+													</Button>
+												{:else}
+													<Button size="sm" variant="outline" disabled>
+														View
+													</Button>
+												{/if}
+											</Table.Cell>
+										</Table.Row>
+									{/each}
+								</Table.Body>
+							</Table.Root>
+						</div>
 					{:else}
 						<div class="text-center py-8">
 							<Package class="h-12 w-12 text-muted-foreground mx-auto mb-4" />
