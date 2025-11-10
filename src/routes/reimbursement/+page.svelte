@@ -8,6 +8,7 @@
 	import { Separator } from '$lib/components/ui/separator/index.js';
 	import * as Tabs from '$lib/components/ui/tabs/index.js';
 	import * as Table from '$lib/components/ui/table/index.js';
+	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
 	import {
 		DollarSign,
 		Package,
@@ -20,7 +21,11 @@
 		Search,
 		Filter,
 		Calendar,
-		FileText
+		FileText,
+		MoreVertical,
+		Check,
+		X,
+		Ban
 	} from 'lucide-svelte';
 	import { format } from 'date-fns';
 
@@ -35,6 +40,7 @@
 	let syncError = '';
 	let syncSuccess = false;
 	let syncResult: any = null;
+	let updatingStatus: Record<string, boolean> = {};
 
 	// Filter state
 	let filterCategory = 'ALL';
@@ -75,9 +81,12 @@
 			loading = true;
 			syncError = '';
 
+			console.log('Loading reimbursement data...');
+
 			// Load stats
 			const statsResponse = await fetch('/api/reimbursement/stats');
 			const statsResult = await statsResponse.json();
+			console.log('Stats loaded:', statsResult);
 
 			if (statsResult.success) {
 				stats = statsResult.stats || [];
@@ -86,9 +95,12 @@
 			// Load items
 			const itemsResponse = await fetch('/api/reimbursement/items');
 			const itemsResult = await itemsResponse.json();
+			console.log('Items loaded:', itemsResult);
 
 			if (itemsResult.success) {
 				items = itemsResult.items || [];
+				console.log('Total items:', items.length);
+				console.log('Sample item:', items[0]);
 				applyFilters();
 			}
 		} catch (error) {
@@ -188,13 +200,23 @@
 
 			const result = await response.json();
 
-			if (result.success) {
-				syncSuccess = true;
-				syncResult = result;
-				await loadReimbursementData();
-			} else {
-				syncError = result.error || 'Sync failed';
+			// Always show results even if partial success
+			syncSuccess = true;
+			syncResult = result;
+
+			// Only show sync error if complete failure (no reports succeeded)
+			if (!result.success && result.errors && result.errors.length > 0) {
+				// Check if all reports failed
+				const allReportsFailed = result.reportDetails &&
+					result.reportDetails.every((r: any) => r.status === 'failed');
+
+				if (allReportsFailed) {
+					syncError = 'All reports failed to sync. See details below.';
+					syncSuccess = false;
+				}
 			}
+
+			await loadReimbursementData();
 		} catch (error) {
 			console.error('Sync error:', error);
 			syncError = 'Network error during sync';
@@ -211,12 +233,63 @@
 		applyFilters();
 	}
 
-	// Calculate totals
-	$: totalValue = filteredItems.reduce((sum, item) => sum + (item.reimbursementAmount || 0), 0);
-	$: claimableItems = items.filter(item => item.status === 'CLAIMABLE');
-	$: claimableValue = claimableItems.reduce((sum, item) => sum + (item.reimbursementAmount || 0), 0);
-	$: reimbursedItems = items.filter(item => item.status === 'REIMBURSED');
-	$: reimbursedValue = reimbursedItems.reduce((sum, item) => sum + (item.reimbursementAmount || 0), 0);
+	async function updateItemStatus(itemId: string, newStatus: string) {
+		try {
+			console.log('Updating item status:', { itemId, newStatus });
+			updatingStatus[itemId] = true;
+			updatingStatus = { ...updatingStatus };
+
+			const url = `/api/reimbursement/items/${itemId}/status`;
+			console.log('Sending PATCH request to:', url);
+
+			const response = await fetch(url, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ status: newStatus })
+			});
+
+			console.log('Response status:', response.status);
+			const result = await response.json();
+			console.log('Response result:', result);
+
+			if (result.success) {
+				// Update the item in the items array
+				items = items.map((item) => {
+					if (item.id === itemId) {
+						return { ...item, status: newStatus, updatedAt: result.item.updatedAt };
+					}
+					return item;
+				});
+				applyFilters();
+				console.log('Status updated successfully');
+			} else {
+				console.error('Failed to update status:', result.error);
+				alert(`Failed to update status: ${result.error}`);
+			}
+		} catch (error) {
+			console.error('Error updating status:', error);
+			alert('Network error while updating status');
+		} finally {
+			updatingStatus[itemId] = false;
+			updatingStatus = { ...updatingStatus };
+		}
+	}
+
+	// Calculate totals - handle both estimatedValue (claimable) and amountTotal (reimbursed)
+	$: totalValue = filteredItems.reduce((sum, item) => {
+		const value = parseFloat(item.estimatedValue || item.amountTotal || item.reimbursementAmount || 0);
+		return sum + value;
+	}, 0);
+	$: claimableItemsList = items.filter(item => item.status === 'CLAIMABLE');
+	$: claimableValue = claimableItemsList.reduce((sum, item) => {
+		const value = parseFloat(item.estimatedValue || item.amountTotal || 0);
+		return sum + value;
+	}, 0);
+	$: reimbursedItemsList = items.filter(item => item.status === 'REIMBURSED');
+	$: reimbursedValue = reimbursedItemsList.reduce((sum, item) => {
+		const value = parseFloat(item.amountTotal || item.estimatedValue || 0);
+		return sum + value;
+	}, 0);
 </script>
 
 <svelte:head>
@@ -262,11 +335,54 @@
 			<Card.Content class="pt-6">
 				<div class="flex items-center gap-2 text-green-800">
 					<CheckCircle class="h-5 w-5" />
-					<span class="font-medium">Sync Completed Successfully</span>
+					<span class="font-medium">Sync Completed</span>
 				</div>
-				<p class="text-sm text-green-700 mt-2">
-					Processed {syncResult.totalProcessed} items, found {syncResult.newItems} new items
-				</p>
+				<div class="mt-4 space-y-3">
+					<div class="text-sm font-medium text-green-800">
+						Summary: {syncResult.totalProcessed || 0} items processed, {syncResult.claimableItems || 0} claimable items found
+					</div>
+
+					{#if syncResult.reportDetails && syncResult.reportDetails.length > 0}
+						<div class="space-y-2">
+							<div class="text-sm font-medium text-green-800">Report Details:</div>
+							{#each syncResult.reportDetails as report}
+								<div class="flex items-start gap-2 text-sm p-2 rounded border {report.status === 'success' ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}">
+									{#if report.status === 'success'}
+										<CheckCircle class="h-4 w-4 text-green-600 flex-shrink-0 mt-0.5" />
+										<div class="flex-1">
+											<div class="font-medium text-green-800">{report.name}</div>
+											<div class="text-green-700">Processed {report.processedCount} items</div>
+											{#if report.reportId}
+												<div class="text-xs text-green-600 mt-1">Report ID: {report.reportId}</div>
+											{/if}
+										</div>
+									{:else}
+										<AlertCircle class="h-4 w-4 text-red-600 flex-shrink-0 mt-0.5" />
+										<div class="flex-1">
+											<div class="font-medium text-red-800">{report.name}</div>
+											<div class="text-red-700">{report.error || 'Failed to sync'}</div>
+										</div>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					{/if}
+
+					{#if syncResult.errors && syncResult.errors.length > 0}
+						<div class="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded">
+							<div class="text-sm font-medium text-yellow-800 mb-2">Partial Success - Some reports failed:</div>
+							<ul class="text-xs text-yellow-700 space-y-1 list-disc list-inside">
+								{#each syncResult.errors as error}
+									<li>{error}</li>
+								{/each}
+							</ul>
+						</div>
+					{/if}
+
+					<div class="text-xs text-green-600">
+						Completed in {(syncResult.duration / 1000).toFixed(2)}s
+					</div>
+				</div>
 			</Card.Content>
 		</Card.Root>
 	{/if}
@@ -298,7 +414,7 @@
 					<Skeleton class="h-8 w-20" />
 				{:else}
 					<div class="text-2xl font-bold text-green-600">{formatCurrency(claimableValue)}</div>
-					<p class="text-xs text-muted-foreground">{claimableItems.length} items ready</p>
+					<p class="text-xs text-muted-foreground">{claimableItemsList.length} items ready</p>
 				{/if}
 			</Card.Content>
 		</Card.Root>
@@ -313,7 +429,7 @@
 					<Skeleton class="h-8 w-20" />
 				{:else}
 					<div class="text-2xl font-bold">{formatCurrency(reimbursedValue)}</div>
-					<p class="text-xs text-muted-foreground">{reimbursedItems.length} items paid</p>
+					<p class="text-xs text-muted-foreground">{reimbursedItemsList.length} items paid</p>
 				{/if}
 			</Card.Content>
 		</Card.Root>
@@ -328,7 +444,7 @@
 					<Skeleton class="h-8 w-20" />
 				{:else}
 					<div class="text-2xl font-bold">
-						{items.length > 0 ? ((reimbursedItems.length / items.length) * 100).toFixed(1) : 0}%
+						{items.length > 0 ? ((reimbursedItemsList.length / items.length) * 100).toFixed(1) : 0}%
 					</div>
 					<p class="text-xs text-muted-foreground">Reimbursement rate</p>
 				{/if}
@@ -362,7 +478,10 @@
 						<div class="space-y-3">
 							{#each Object.entries(categoryLabels) as [category, label]}
 								{@const categoryItems = items.filter(item => category === 'ALL' || item.category === category)}
-								{@const categoryValue = categoryItems.reduce((sum, item) => sum + (item.reimbursementAmount || 0), 0)}
+								{@const categoryValue = categoryItems.reduce((sum, item) => {
+									const value = parseFloat(item.estimatedValue || item.amountTotal || 0);
+									return sum + value;
+								}, 0)}
 								{#if categoryItems.length > 0}
 									{@const badgeInfo = getCategoryBadge(category)}
 									<div class="flex items-center justify-between p-3 rounded-lg border">
@@ -460,15 +579,16 @@
 						</div>
 					{:else if filteredItems.length > 0}
 						<div class="px-6 pb-6">
-							<Table.Root class="w-full min-w-[1000px]">
+							<Table.Root class="w-full min-w-[1100px]">
 								<Table.Header>
 									<Table.Row>
-										<Table.Head>Product</Table.Head>
-										<Table.Head>Category</Table.Head>
-										<Table.Head>Status</Table.Head>
-										<Table.Head>Amount</Table.Head>
-										<Table.Head>Date</Table.Head>
-										<Table.Head>Actions</Table.Head>
+										<Table.Head class="w-[300px]">Product</Table.Head>
+										<Table.Head class="w-[180px]">Category</Table.Head>
+										<Table.Head class="w-[120px]">Status</Table.Head>
+										<Table.Head class="w-[80px] text-right">Qty</Table.Head>
+										<Table.Head class="w-[120px] text-right">Amount</Table.Head>
+										<Table.Head class="w-[120px]">Date</Table.Head>
+										<Table.Head class="w-[60px] text-right">Actions</Table.Head>
 									</Table.Row>
 								</Table.Header>
 								<Table.Body>
@@ -497,23 +617,111 @@
 													{item.status}
 												</Badge>
 											</Table.Cell>
-											<Table.Cell class="font-medium">
-												{formatCurrency(item.reimbursementAmount || 0)}
+											<Table.Cell class="text-right text-sm">
+												{item.quantity || item.quantityReimbursedTotal || 1}
+											</Table.Cell>
+											<Table.Cell class="font-medium text-right">
+												{formatCurrency(parseFloat(item.estimatedValue || item.amountTotal || item.reimbursementAmount || 0))}
 											</Table.Cell>
 											<Table.Cell class="text-sm text-muted-foreground">
 												{item.eventDate ? format(new Date(item.eventDate), 'MMM dd, yyyy') : 'N/A'}
 											</Table.Cell>
 											<Table.Cell>
-												{#if item.status === 'CLAIMABLE'}
-													<Button size="sm" class="gap-1">
-														<FileText class="h-3 w-3" />
-														Claim
-													</Button>
-												{:else}
-													<Button size="sm" variant="outline" disabled>
-														View
-													</Button>
-												{/if}
+												<div class="flex items-center justify-end gap-2">
+													<DropdownMenu.Root>
+														<DropdownMenu.Trigger>
+															{#snippet child({ props })}
+																<Button
+																	{...props}
+																	size="sm"
+																	variant="ghost"
+																	class="h-8 w-8 p-0"
+																	disabled={updatingStatus[item.id]}
+																	title="Update status"
+																>
+																	{#if updatingStatus[item.id]}
+																		<RefreshCw class="h-4 w-4 animate-spin" />
+																	{:else}
+																		<MoreVertical class="h-4 w-4" />
+																	{/if}
+																</Button>
+															{/snippet}
+														</DropdownMenu.Trigger>
+														<DropdownMenu.Content align="end" class="w-48">
+															<DropdownMenu.Label class="text-xs font-semibold text-muted-foreground">
+																Update Status
+															</DropdownMenu.Label>
+															<DropdownMenu.Separator />
+															<DropdownMenu.Item
+																onclick={() => updateItemStatus(item.id, 'PENDING')}
+																disabled={item.status === 'PENDING'}
+																class="cursor-pointer"
+															>
+																<Clock class="h-4 w-4 mr-2 text-yellow-600" />
+																<span>Pending</span>
+																{#if item.status === 'PENDING'}
+																	<Check class="h-3 w-3 ml-auto text-green-600" />
+																{/if}
+															</DropdownMenu.Item>
+															<DropdownMenu.Item
+																onclick={() => updateItemStatus(item.id, 'CLAIMABLE')}
+																disabled={item.status === 'CLAIMABLE'}
+																class="cursor-pointer"
+															>
+																<CheckCircle class="h-4 w-4 mr-2 text-blue-600" />
+																<span>Claimable</span>
+																{#if item.status === 'CLAIMABLE'}
+																	<Check class="h-3 w-3 ml-auto text-green-600" />
+																{/if}
+															</DropdownMenu.Item>
+															<DropdownMenu.Item
+																onclick={() => updateItemStatus(item.id, 'CLAIMED')}
+																disabled={item.status === 'CLAIMED'}
+																class="cursor-pointer"
+															>
+																<FileText class="h-4 w-4 mr-2 text-purple-600" />
+																<span>Claimed</span>
+																{#if item.status === 'CLAIMED'}
+																	<Check class="h-3 w-3 ml-auto text-green-600" />
+																{/if}
+															</DropdownMenu.Item>
+															<DropdownMenu.Item
+																onclick={() => updateItemStatus(item.id, 'REIMBURSED')}
+																disabled={item.status === 'REIMBURSED'}
+																class="cursor-pointer"
+															>
+																<Check class="h-4 w-4 mr-2 text-green-600" />
+																<span>Reimbursed</span>
+																{#if item.status === 'REIMBURSED'}
+																	<Check class="h-3 w-3 ml-auto text-green-600" />
+																{/if}
+															</DropdownMenu.Item>
+															<DropdownMenu.Separator />
+															<DropdownMenu.Item
+																onclick={() => updateItemStatus(item.id, 'DENIED')}
+																disabled={item.status === 'DENIED'}
+																class="cursor-pointer text-red-600 focus:text-red-600"
+															>
+																<X class="h-4 w-4 mr-2" />
+																<span>Denied</span>
+																{#if item.status === 'DENIED'}
+																	<Check class="h-3 w-3 ml-auto text-red-600" />
+																{/if}
+															</DropdownMenu.Item>
+															<DropdownMenu.Item
+																onclick={() => updateItemStatus(item.id, 'EXPIRED')}
+																disabled={item.status === 'EXPIRED'}
+																class="cursor-pointer text-gray-600 focus:text-gray-600"
+															>
+																<Ban class="h-4 w-4 mr-2" />
+																<span>Expired</span>
+																{#if item.status === 'EXPIRED'}
+																	<Check class="h-3 w-3 ml-auto text-gray-600" />
+																{/if}
+															</DropdownMenu.Item>
+														</DropdownMenu.Content>
+													</DropdownMenu.Root>
+												</div>
 											</Table.Cell>
 										</Table.Row>
 									{/each}

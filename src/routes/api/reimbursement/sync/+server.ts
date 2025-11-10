@@ -76,18 +76,51 @@ export const POST: RequestHandler = async ({ request }) => {
 			}
 		});
 
+		// Build detailed report status
+		const reportDetails = [
+			{
+				name: 'Reimbursement Report',
+				reportId: result.reportIds.reimbursement,
+				status: result.reportIds.reimbursement ? 'success' : 'failed',
+				processedCount: result.processedCounts.reimbursed,
+				error: result.errors.find(e => e.includes('reimbursement report'))
+			},
+			{
+				name: 'Customer Returns Report',
+				reportId: result.reportIds.customerReturns,
+				status: result.reportIds.customerReturns ? 'success' : 'failed',
+				processedCount: result.processedCounts.returns,
+				error: result.errors.find(e => e.includes('customer returns report'))
+			},
+			{
+				name: 'Inventory Ledger Report',
+				reportId: result.reportIds.inventoryLedger,
+				status: result.reportIds.inventoryLedger ? 'success' : 'failed',
+				processedCount: result.processedCounts.ledgerEvents,
+				error: result.errors.find(e => e.includes('inventory ledger report'))
+			},
+			{
+				name: 'Unsuppressed Inventory Report',
+				reportId: result.reportIds.unsuppressedInventory,
+				status: result.reportIds.unsuppressedInventory ? 'success' : 'failed',
+				processedCount: result.processedCounts.inventory,
+				error: result.errors.find(e => e.includes('unsuppressed inventory report'))
+			}
+		];
+
 		console.log('📤 Returning response:', {
 			success: result.success,
-			reportIds: result.reportIds,
-			processedCounts: result.processedCounts,
-			errors: result.errors,
+			reportDetails,
+			totalProcessed: result.processedCounts.reimbursed + result.processedCounts.returns + result.processedCounts.inventory + result.processedCounts.ledgerEvents,
+			claimableItems: result.processedCounts.claimable,
 			duration
 		});
 
 		return json({
 			success: result.success,
-			reportIds: result.reportIds,
-			processedCounts: result.processedCounts,
+			reportDetails,
+			totalProcessed: result.processedCounts.reimbursed + result.processedCounts.returns + result.processedCounts.inventory + result.processedCounts.ledgerEvents,
+			claimableItems: result.processedCounts.claimable,
 			errors: result.errors,
 			duration
 		});
