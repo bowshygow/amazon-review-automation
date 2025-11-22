@@ -275,18 +275,26 @@ export class AmazonService {
 		status: 'SENT' | 'FAILED' | 'SKIPPED' | 'NOT_ELIGIBLE';
 		error?: string;
 		reviewRequestId?: string;
+		validationDetails?: any;
 	}> {
 		try {
 			// Validate order exists and is eligible
-			if (!this.isOrderEligibleForReview(order)) {
+			const eligibilityCheck = this.isOrderEligibleForReview(order);
+			if (!eligibilityCheck.eligible) {
 				logger.info('Order not eligible for review request', {
 					orderId: order.id,
 					amazonOrderId: order.amazonOrderId,
-					reason: 'Business rules validation failed'
+					reason: eligibilityCheck.reason,
+					details: eligibilityCheck.details
 				});
 
-				await this.markOrderAsSkipped(order.id, 'Order not eligible for review');
-				return { success: false, status: 'SKIPPED', error: 'Order not eligible for review' };
+				await this.markOrderAsSkipped(order.id, eligibilityCheck.reason || 'Order not eligible for review');
+				return {
+					success: false,
+					status: 'SKIPPED',
+					error: eligibilityCheck.reason || 'Order not eligible for review',
+					validationDetails: eligibilityCheck.details
+				};
 			}
 
 			// Send review request via Amazon API with verification
@@ -648,8 +656,9 @@ export class AmazonService {
 					processed++;
 
 					// Check if order is still eligible (double-check business rules)
-					if (!this.isOrderEligibleForReview(order)) {
-						await this.markOrderAsSkipped(order.id, 'Order no longer eligible');
+					const eligibilityCheck = this.isOrderEligibleForReview(order);
+					if (!eligibilityCheck.eligible) {
+						await this.markOrderAsSkipped(order.id, eligibilityCheck.reason || 'Order no longer eligible');
 						skipped++;
 						continue;
 					}
@@ -724,24 +733,48 @@ export class AmazonService {
 	/**
 	 * Check if order is eligible for review request
 	 */
-	private isOrderEligibleForReview(order: LegacyAmazonOrder): boolean {
+	private isOrderEligibleForReview(
+		order: LegacyAmazonOrder
+	): { eligible: boolean; reason?: string; details?: any } {
 		// Basic eligibility checks
-		if (order.isReturned) return false;
-		if (order.reviewRequestSent) return false;
-
-		// Check if order status is eligible for review (Shipped or PartiallyShipped)
-		if (order.orderStatus !== 'Shipped' && order.orderStatus !== 'PartiallyShipped') return false;
-
-		// Check delivery date (must be at least 25 days old)
-		if (!order.deliveryDate) return false;
-		const deliveryDate = new Date(order.deliveryDate);
-		const twentyFiveDaysAgo = addDays(new Date(), -25);
-
-		if (isBefore(deliveryDate, twentyFiveDaysAgo)) {
-			return true;
+		if (order.isReturned) {
+			return { eligible: false, reason: 'Order has been returned' };
+		}
+		if (order.reviewRequestSent) {
+			return {
+				eligible: false,
+				reason: 'Review request already sent',
+				details: { sentDate: order.reviewRequestDate }
+			};
 		}
 
-		return false;
+		// Check if order status is eligible for review (Shipped or PartiallyShipped)
+		if (order.orderStatus !== 'Shipped' && order.orderStatus !== 'PartiallyShipped') {
+			return {
+				eligible: false,
+				reason: `Order status '${order.orderStatus}' is not eligible (must be Shipped or PartiallyShipped)`
+			};
+		}
+
+		// Check delivery date (must be at least 25 days old)
+		if (!order.deliveryDate) {
+			return { eligible: false, reason: 'No delivery date available' };
+		}
+		const deliveryDate = new Date(order.deliveryDate);
+		const twentyFiveDaysAgo = addDays(new Date(), -25);
+		const daysSinceDelivery = Math.floor(
+			(new Date().getTime() - deliveryDate.getTime()) / (1000 * 60 * 60 * 24)
+		);
+
+		if (isBefore(deliveryDate, twentyFiveDaysAgo)) {
+			return { eligible: true };
+		}
+
+		return {
+			eligible: false,
+			reason: `Order delivered too recently (${daysSinceDelivery} days ago, needs 25+ days)`,
+			details: { deliveryDate: order.deliveryDate, daysSinceDelivery, requiredDays: 25 }
+		};
 	}
 
 	/**
@@ -967,6 +1000,7 @@ export class AmazonService {
 		success: boolean;
 		status: string;
 		error?: string;
+		validationDetails?: any;
 	}> {
 		try {
 			logger.info('Triggering review request for order', { amazonOrderId });
@@ -994,7 +1028,8 @@ export class AmazonService {
 			return {
 				success: result.success,
 				status: result.status,
-				error: result.error
+				error: result.error,
+				validationDetails: result.validationDetails
 			};
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : 'Unknown error';

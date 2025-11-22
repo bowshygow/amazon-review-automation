@@ -309,6 +309,8 @@ export interface LegacyAmazonOrder {
 	reviewRequestDate?: string;
 	reviewRequestStatus?: string;
 	reviewRequestError?: string;
+	hasSolicitationActions?: boolean;
+	solicitationActions?: string[];
 	createdAt: string;
 	updatedAt: string;
 }

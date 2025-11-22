@@ -41,7 +41,10 @@ export const POST: RequestHandler = async ({ request }) => {
 
 		return json({
 			success: result.success,
-			data: result
+			data: result,
+			error: result.error,
+			status: result.status,
+			validationDetails: result.validationDetails
 		});
 	} catch (error: any) {
 		const duration = Date.now() - startTime;

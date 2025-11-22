@@ -69,6 +69,8 @@ interface UpdateOrderData {
 	reviewRequestDate?: Date | string | null;
 	reviewRequestStatus?: string;
 	reviewRequestError?: string | null;
+	hasSolicitationActions?: boolean;
+	solicitationActions?: string[];
 }
 
 interface CreateReviewRequestData {

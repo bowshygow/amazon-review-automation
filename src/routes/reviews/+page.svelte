@@ -33,6 +33,7 @@
 	let syncLoading = false;
 	let solicitationLoading: Record<string, boolean> = {};
 	let reviewTriggerLoading: Record<string, boolean> = {};
+	let bulkProcessLoading = false;
 
 	// Pagination and filtering
 	let currentPage = 1;
@@ -193,7 +194,7 @@
 
 	async function checkSolicitationActions(orderId: string) {
 		try {
-			solicitationLoading[orderId] = true;
+			solicitationLoading = { ...solicitationLoading, [orderId]: true };
 			const response = await fetch(`/api/orders/check-solicitation?orderId=${orderId}`);
 			const result = await response.json();
 
@@ -214,13 +215,13 @@
 		} catch (error) {
 			alert('Error checking solicitation actions');
 		} finally {
-			solicitationLoading[orderId] = false;
+			solicitationLoading = { ...solicitationLoading, [orderId]: false };
 		}
 	}
 
 	async function triggerReviewRequest(orderId: string) {
 		try {
-			reviewTriggerLoading[orderId] = true;
+			reviewTriggerLoading = { ...reviewTriggerLoading, [orderId]: true };
 			const response = await fetch('/api/orders/trigger-review', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -241,14 +242,43 @@
 					return order;
 				});
 				await loadDashboardData();
-				alert(`Review request sent for order ${orderId}!`);
+				alert(`✓ Review request sent successfully for order ${orderId}!`);
 			} else {
-				alert(`Failed to trigger review: ${result.error}`);
+				// Handle different failure statuses
+				const errorMsg = result.error || 'Unknown error';
+				const status = result.status || 'FAILED';
+				const validationDetails = result.validationDetails || result.data?.validationDetails;
+
+				if (status === 'SKIPPED') {
+					// Show detailed reason for skipping
+					let detailedMessage = `⚠ Order ${orderId} was SKIPPED\n\n`;
+					detailedMessage += `❌ Reason: ${errorMsg}\n`;
+
+					// Add specific validation details if available
+					if (validationDetails) {
+						detailedMessage += '\n📋 Details:\n';
+						if (validationDetails.daysSinceDelivery !== undefined) {
+							detailedMessage += `• Days since delivery: ${validationDetails.daysSinceDelivery}\n`;
+							detailedMessage += `• Required days: ${validationDetails.requiredDays || 25}\n`;
+							detailedMessage += `• Delivery date: ${validationDetails.deliveryDate}\n`;
+						}
+						if (validationDetails.sentDate) {
+							detailedMessage += `• Previously sent: ${validationDetails.sentDate}\n`;
+						}
+					}
+
+					alert(detailedMessage);
+				} else {
+					alert(`✗ Failed to trigger review for order ${orderId}.\n\nError: ${errorMsg}`);
+				}
+
+				// Refresh data to show updated status
+				await loadDashboardData();
 			}
 		} catch (error) {
-			alert('Error triggering review request');
+			alert('Error triggering review request: ' + (error instanceof Error ? error.message : 'Unknown error'));
 		} finally {
-			reviewTriggerLoading[orderId] = false;
+			reviewTriggerLoading = { ...reviewTriggerLoading, [orderId]: false };
 		}
 	}
 
@@ -260,6 +290,43 @@
 	function handlePageChange(page: number) {
 		currentPage = page;
 		loadOrders();
+	}
+
+	async function bulkProcessAllOrders() {
+		if (!confirm('This will:\n1. Check solicitation actions for ALL orders\n2. Automatically send review requests if actions are available\n\nThis ignores the 25-day delivery requirement and may take a while.\n\nContinue?')) {
+			return;
+		}
+
+		try {
+			bulkProcessLoading = true;
+			const response = await fetch('/api/orders/bulk-check', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' }
+			});
+
+			const result = await response.json();
+			if (result.success) {
+				let message = `✓ Bulk processing completed!\n\n`;
+				message += `📊 Summary:\n`;
+				message += `• Total processed: ${result.processed}\n`;
+				message += `• With actions available: ${result.withActions}\n`;
+				message += `• Review requests sent: ${result.sent}\n`;
+				message += `• No actions available: ${result.noActions}\n`;
+				if (result.failed > 0) {
+					message += `• Failed: ${result.failed}\n`;
+				}
+				message += `\n⏱️ Duration: ${(result.duration / 1000).toFixed(1)}s`;
+
+				alert(message);
+				await loadDashboardData();
+			} else {
+				alert(`✗ Bulk processing failed: ${result.error}`);
+			}
+		} catch (err: any) {
+			alert(`Error: ${err.message}`);
+		} finally {
+			bulkProcessLoading = false;
+		}
 	}
 </script>
 
@@ -367,6 +434,27 @@
 		</Card.Content>
 	</Card.Root>
 
+	<!-- Bulk Actions -->
+	<Card.Root>
+		<Card.Header>
+			<Card.Title>Bulk Review Processing</Card.Title>
+			<Card.Description>Check and send reviews for all orders in one operation</Card.Description>
+		</Card.Header>
+		<Card.Content>
+			<div class="flex flex-wrap gap-3">
+				<Button onclick={bulkProcessAllOrders} disabled={bulkProcessLoading} class="gap-2">
+					<MessageSquare class="h-4 w-4" />
+					{bulkProcessLoading ? 'Processing All Orders...' : 'Check & Send All Reviews'}
+				</Button>
+			</div>
+			<p class="text-sm text-muted-foreground mt-2">
+				✓ Checks solicitation actions for all orders<br/>
+				✓ Automatically sends review requests if available<br/>
+				⚠️ Ignores the 25-day delivery requirement
+			</p>
+		</Card.Content>
+	</Card.Root>
+
 	<!-- Orders Table -->
 	<Card.Root>
 		<Card.Header>
@@ -381,13 +469,24 @@
 					<Input
 						placeholder="Search orders..."
 						bind:value={searchTerm}
-						on:keydown={(e) => e.key === 'Enter' && handleSearch()}
+						onkeydown={(e) => e.key === 'Enter' && handleSearch()}
 						class="pl-8"
 					/>
 				</div>
-				<Button on:click={handleSearch} variant="outline" class="gap-2">
+				<select
+					bind:value={statusFilter}
+					onchange={handleSearch}
+					class="px-3 py-2 border border-input rounded-md bg-background text-sm"
+				>
+					<option value="">All Statuses</option>
+					<option value="PENDING">Pending</option>
+					<option value="SENT">Sent</option>
+					<option value="FAILED">Failed</option>
+					<option value="SKIPPED">Skipped</option>
+				</select>
+				<Button onclick={handleSearch} variant="outline" class="gap-2">
 					<Filter class="h-4 w-4" />
-					Filter
+					Search
 				</Button>
 			</div>
 
@@ -426,7 +525,7 @@
 							<Table.Cell>
 								{#if order.reviewRequestStatus}
 									{@const statusInfo = getStatusBadge(order.reviewRequestStatus)}
-									<Badge variant={statusInfo.variant} class="gap-1">
+									<Badge variant={statusInfo.variant as any} class="gap-1">
 										<svelte:component this={statusInfo.icon} class="h-3 w-3" />
 										{order.reviewRequestStatus}
 									</Badge>
@@ -436,21 +535,20 @@
 							</Table.Cell>
 							<Table.Cell>
 								<div class="flex items-center gap-2">
-									<Button
-										size="sm"
-										variant="outline"
-										on:click={() => checkSolicitationActions(order.amazonOrderId)}
+									<button
+										class="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-8 px-3"
+										onclick={() => checkSolicitationActions(order.amazonOrderId)}
 										disabled={solicitationLoading[order.amazonOrderId]}
 									>
 										{solicitationLoading[order.amazonOrderId] ? 'Checking...' : 'Check'}
-									</Button>
-									<Button
-										size="sm"
-										on:click={() => triggerReviewRequest(order.amazonOrderId)}
+									</button>
+									<button
+										class="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-8 px-3"
+										onclick={() => triggerReviewRequest(order.amazonOrderId)}
 										disabled={reviewTriggerLoading[order.amazonOrderId] || order.reviewRequestStatus === 'SENT'}
 									>
 										{reviewTriggerLoading[order.amazonOrderId] ? 'Sending...' : 'Send Review'}
-									</Button>
+									</button>
 								</div>
 							</Table.Cell>
 						</Table.Row>
@@ -465,23 +563,21 @@
 							Showing {(currentPage - 1) * pageSize + 1} to {Math.min(currentPage * pageSize, totalOrders)} of {totalOrders} orders
 						</div>
 						<div class="flex items-center gap-2">
-							<Button
-								variant="outline"
-								size="sm"
-								on:click={() => handlePageChange(currentPage - 1)}
+							<button
+								class="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-8 px-3"
+								onclick={() => handlePageChange(currentPage - 1)}
 								disabled={currentPage <= 1}
 							>
 								Previous
-							</Button>
+							</button>
 							<span class="text-sm">Page {currentPage} of {totalPages}</span>
-							<Button
-								variant="outline"
-								size="sm"
-								on:click={() => handlePageChange(currentPage + 1)}
+							<button
+								class="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-8 px-3"
+								onclick={() => handlePageChange(currentPage + 1)}
 								disabled={currentPage >= totalPages}
 							>
 								Next
-							</Button>
+							</button>
 						</div>
 					</div>
 				{/if}
