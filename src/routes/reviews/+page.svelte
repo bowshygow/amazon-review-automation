@@ -18,7 +18,8 @@
 		CheckCircle,
 		XCircle,
 		Clock,
-		AlertTriangle
+		AlertTriangle,
+		Download
 	} from 'lucide-svelte';
 	import { format } from 'date-fns';
 
@@ -34,6 +35,7 @@
 	let solicitationLoading: Record<string, boolean> = {};
 	let reviewTriggerLoading: Record<string, boolean> = {};
 	let bulkProcessLoading = false;
+	let exportLoading = false;
 
 	// Pagination and filtering
 	let currentPage = 1;
@@ -61,7 +63,7 @@
 				params.append('search', searchTerm);
 			}
 			if (statusFilter) {
-				params.append('status', statusFilter);
+				params.append('reviewRequestStatus', statusFilter);
 			}
 
 			const ordersResponse = await fetch(`/api/orders?${params.toString()}`);
@@ -292,6 +294,88 @@
 		loadOrders();
 	}
 
+	async function exportToCSV() {
+		try {
+			exportLoading = true;
+
+			// Fetch all filtered results (no pagination limit)
+			const params = new URLSearchParams({
+				page: '1',
+				limit: '999999', // Large number to get all results
+				sortBy: 'deliveryDate',
+				sortOrder: 'desc'
+			});
+
+			if (searchTerm) {
+				params.append('search', searchTerm);
+			}
+			if (statusFilter) {
+				params.append('reviewRequestStatus', statusFilter);
+			}
+
+			const response = await fetch(`/api/orders?${params.toString()}`);
+			const result = await response.json();
+
+			if (!result.success || !result.data) {
+				alert('Failed to fetch data for export');
+				return;
+			}
+
+			const allOrders = result.data;
+
+			// Convert to CSV
+			const headers = [
+				'Order ID',
+				'Purchase Date',
+				'Delivery Date',
+				'Order Status',
+				'Total Amount',
+				'Currency',
+				'Review Status',
+				'Review Request Date',
+				'Marketplace ID'
+			];
+
+			const csvRows = [headers.join(',')];
+
+			allOrders.forEach((order: LegacyAmazonOrder) => {
+				const row = [
+					`"${order.amazonOrderId}"`,
+					order.purchaseDate ? `"${format(new Date(order.purchaseDate), 'yyyy-MM-dd')}"` : '""',
+					order.deliveryDate ? `"${format(new Date(order.deliveryDate), 'yyyy-MM-dd')}"` : '""',
+					`"${order.orderStatus}"`,
+					order.orderTotal ? `"${order.orderTotal.amount}"` : '""',
+					order.orderTotal ? `"${order.orderTotal.currencyCode}"` : '""',
+					`"${order.reviewRequestStatus || 'Not Sent'}"`,
+					order.reviewRequestDate ? `"${format(new Date(order.reviewRequestDate), 'yyyy-MM-dd HH:mm:ss')}"` : '""',
+					`"${order.marketplaceId}"`
+				];
+				csvRows.push(row.join(','));
+			});
+
+			const csvContent = csvRows.join('\n');
+
+			// Create download link
+			const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+			const link = document.createElement('a');
+			const url = URL.createObjectURL(blob);
+
+			link.setAttribute('href', url);
+			link.setAttribute('download', `review-requests-${new Date().toISOString().split('T')[0]}.csv`);
+			link.style.visibility = 'hidden';
+
+			document.body.appendChild(link);
+			link.click();
+			document.body.removeChild(link);
+
+			alert(`✓ Successfully exported ${allOrders.length} orders to CSV`);
+		} catch (err: any) {
+			alert(`Error exporting data: ${err.message}`);
+		} finally {
+			exportLoading = false;
+		}
+	}
+
 	async function bulkProcessAllOrders() {
 		if (!confirm('This will:\n1. Check solicitation actions for ALL orders\n2. Automatically send review requests if actions are available\n\nThis ignores the 25-day delivery requirement and may take a while.\n\nContinue?')) {
 			return;
@@ -487,6 +571,10 @@
 				<Button onclick={handleSearch} variant="outline" class="gap-2">
 					<Filter class="h-4 w-4" />
 					Search
+				</Button>
+				<Button onclick={exportToCSV} disabled={exportLoading} variant="outline" class="gap-2">
+					<Download class="h-4 w-4" />
+					{exportLoading ? 'Exporting...' : 'Export CSV'}
 				</Button>
 			</div>
 
